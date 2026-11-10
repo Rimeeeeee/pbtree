@@ -47,6 +47,58 @@ fn maximum_prefix_and_key_length() {
 }
 
 #[test]
+fn deep_comb_build_mutations_and_concurrent_drop_use_bounded_stack() {
+    // Each key diverges one bit later, producing 8192 nested branches. Keep the
+    // worker stack small so recursion cannot hide behind the test runner's stack.
+    let snapshot = std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(|| {
+            const DEPTH: usize = 8192;
+            let key = vec![0; DEPTH / 8];
+            let entries =
+                std::iter::once((key.clone(), B256::ZERO)).chain((0..DEPTH).rev().map(|bit| {
+                    let mut sibling = key.clone();
+                    sibling[bit / 8] |= 1 << (7 - bit % 8);
+                    (sibling, B256::ZERO)
+                }));
+            let mut tree = BinaryTree::<Blake3Hasher>::from_sorted_entries(entries).unwrap();
+            let snapshot = tree.clone();
+            assert_eq!(tree.insert(key.clone(), B256::repeat_byte(1)).unwrap(), Some(B256::ZERO));
+            assert_eq!(tree.remove(&key), Some(B256::repeat_byte(1)));
+            assert_eq!(tree.insert(key.clone(), B256::ZERO).unwrap(), None);
+            assert_eq!(tree.root(), snapshot.root());
+            assert_eq!(snapshot.get(&key), Some(B256::ZERO));
+            assert_eq!(
+                tree.proof(&key).verify::<Blake3Hasher>(tree.root(), &key),
+                Ok(Some(B256::ZERO))
+            );
+            assert!(!format!("{tree:?}").is_empty());
+            drop(tree);
+            snapshot
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let workers: Vec<_> = [snapshot.clone(), snapshot]
+        .into_iter()
+        .map(|tree| {
+            let barrier = barrier.clone();
+            std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    barrier.wait();
+                    drop(tree);
+                })
+                .unwrap()
+        })
+        .collect();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
 fn bulk_input_is_strictly_validated() {
     for keys in [vec![vec![2], vec![1]], vec![vec![1], vec![1]]] {
         assert_eq!(

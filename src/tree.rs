@@ -3,17 +3,48 @@ use crate::{
     hash::{branch_hash, leaf_hash},
 };
 use alloy_primitives::B256;
-use std::{marker::PhantomData, sync::Arc};
+use std::{fmt, marker::PhantomData, sync::Arc};
 
 /// A persistent, path-compressed binary Merkle tree.
 ///
 /// Clones share immutable nodes. A mutation copies and rehashes only its search path, so a
 /// previous clone remains an exact snapshot suitable for a competing block or a reorg.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct BinaryTree<H = Blake3Hasher> {
     pub(crate) root: Option<Arc<Node>>,
     len: usize,
     hasher: PhantomData<H>,
+}
+
+impl<H> fmt::Debug for BinaryTree<H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BinaryTree")
+            .field("root", &self.root.as_ref().map(|node| node.hash()))
+            .field("len", &self.len)
+            .finish()
+    }
+}
+
+impl<H> Drop for BinaryTree<H> {
+    fn drop(&mut self) {
+        release(self.root.take());
+    }
+}
+
+// Every owned root is released through this path, including replaced mutation roots.
+// into_inner also handles snapshots being dropped concurrently: exactly one owner
+// receives each last node, rather than letting Arc recursively destroy its children.
+fn release(root: Option<Arc<Node>>) {
+    let Some(Node::Branch { left, right, .. }) = root.and_then(Arc::into_inner) else {
+        return;
+    };
+    let mut stack = vec![left, right];
+    while let Some(node) = stack.pop() {
+        if let Some(Node::Branch { left, right, .. }) = Arc::into_inner(node) {
+            stack.push(left);
+            stack.push(right);
+        }
+    }
 }
 
 impl<H: TreeHasher> Default for BinaryTree<H> {
@@ -76,9 +107,9 @@ impl<H: TreeHasher> BinaryTree<H> {
         validate_key(&key)?;
         let (root, previous) = match &self.root {
             None => (Node::leaf::<H>(key.into_boxed_slice(), value), None),
-            Some(root) => insert::<H>(root, &key, value, 0)?,
+            Some(root) => insert::<H>(root, &key, value)?,
         };
-        self.root = Some(root);
+        release(self.root.replace(root));
         self.len += usize::from(previous.is_none());
         Ok(previous)
     }
@@ -86,8 +117,8 @@ impl<H: TreeHasher> BinaryTree<H> {
     /// Removes a leaf and collapses its parent branch into the surviving child.
     pub fn remove(&mut self, key: &[u8]) -> Option<B256> {
         let root = self.root.as_ref()?;
-        let (new_root, previous) = remove::<H>(root, key, 0);
-        self.root = new_root;
+        let (new_root, previous) = remove::<H>(root, key);
+        release(std::mem::replace(&mut self.root, new_root));
         self.len -= usize::from(previous.is_some());
         previous
     }
@@ -191,109 +222,143 @@ pub(crate) fn matches_prefix(key: &[u8], depth: usize, prefix: &[bool]) -> bool 
 }
 
 fn insert<H: TreeHasher>(
-    node: &Arc<Node>,
+    root: &Arc<Node>,
     key: &[u8],
     value: B256,
-    depth: usize,
 ) -> Result<(Arc<Node>, Option<B256>), TreeError> {
-    match node.as_ref() {
-        Node::Leaf { key: stored, value: previous, .. } => {
-            if stored.as_ref() == key {
-                return Ok((Node::leaf::<H>(key.into(), value), Some(*previous)));
-            }
-            let limit = key.len().min(stored.len()) * 8;
-            let split = (depth..limit)
-                .find(|i| bit(key, *i) != bit(stored, *i))
-                .ok_or(TreeError::PrefixConflict)?;
-            let prefix = (depth..split).map(|i| bit(key, i).unwrap()).collect();
-            let leaf = Node::leaf::<H>(key.into(), value);
-            let (left, right) =
-                if bit(key, split).unwrap() { (node.clone(), leaf) } else { (leaf, node.clone()) };
-            Ok((Node::branch::<H>(prefix, left, right), None))
-        }
-        Node::Branch { prefix, left, right, .. } => {
-            let matched = prefix
-                .iter()
-                .enumerate()
-                .take_while(|(i, b)| bit(key, depth + i) == Some(**b))
-                .count();
-            let direction = bit(key, depth + matched).ok_or(TreeError::PrefixConflict)?;
-            if matched < prefix.len() {
-                let survivor =
-                    Node::branch::<H>(prefix[matched + 1..].to_vec(), left.clone(), right.clone());
+    let mut node = root;
+    let mut depth = 0;
+    let mut path = Vec::new();
+    let (mut replacement, previous) = loop {
+        match node.as_ref() {
+            Node::Leaf { key: stored, value: previous, .. } => {
+                if stored.as_ref() == key {
+                    break (Node::leaf::<H>(key.into(), value), Some(*previous));
+                }
+                let limit = key.len().min(stored.len()) * 8;
+                let split = (depth..limit)
+                    .find(|i| bit(key, *i) != bit(stored, *i))
+                    .ok_or(TreeError::PrefixConflict)?;
+                let prefix = (depth..split).map(|i| bit(key, i).unwrap()).collect();
                 let leaf = Node::leaf::<H>(key.into(), value);
-                let (left, right) = if direction { (survivor, leaf) } else { (leaf, survivor) };
-                return Ok((Node::branch::<H>(prefix[..matched].to_vec(), left, right), None));
+                let (left, right) = if bit(key, split).unwrap() {
+                    (node.clone(), leaf)
+                } else {
+                    (leaf, node.clone())
+                };
+                break (Node::branch::<H>(prefix, left, right), None);
             }
-            let (child, previous) =
-                insert::<H>(if direction { right } else { left }, key, value, depth + matched + 1)?;
-            let (left, right) =
-                if direction { (left.clone(), child) } else { (child, right.clone()) };
-            Ok((Node::branch::<H>(prefix.clone(), left, right), previous))
+            Node::Branch { prefix, left, right, .. } => {
+                let matched = prefix
+                    .iter()
+                    .enumerate()
+                    .take_while(|(i, b)| bit(key, depth + i) == Some(**b))
+                    .count();
+                let direction = bit(key, depth + matched).ok_or(TreeError::PrefixConflict)?;
+                if matched < prefix.len() {
+                    let survivor = Node::branch::<H>(
+                        prefix[matched + 1..].to_vec(),
+                        left.clone(),
+                        right.clone(),
+                    );
+                    let leaf = Node::leaf::<H>(key.into(), value);
+                    let (left, right) = if direction { (survivor, leaf) } else { (leaf, survivor) };
+                    break (Node::branch::<H>(prefix[..matched].to_vec(), left, right), None);
+                }
+                path.push((prefix, if direction { left } else { right }, direction));
+                node = if direction { right } else { left };
+                depth += matched + 1;
+            }
         }
+    };
+    while let Some((prefix, sibling, direction)) = path.pop() {
+        let (left, right) =
+            if direction { (sibling.clone(), replacement) } else { (replacement, sibling.clone()) };
+        replacement = Node::branch::<H>(prefix.clone(), left, right);
     }
+    Ok((replacement, previous))
 }
 
-fn remove<H: TreeHasher>(
-    node: &Arc<Node>,
-    key: &[u8],
-    depth: usize,
-) -> (Option<Arc<Node>>, Option<B256>) {
-    match node.as_ref() {
-        Node::Leaf { key: stored, value, .. } => {
-            if stored.as_ref() == key {
-                (None, Some(*value))
-            } else {
-                (Some(node.clone()), None)
-            }
-        }
-        Node::Branch { prefix, left, right, .. } => {
-            if !matches_prefix(key, depth, prefix) {
-                return (Some(node.clone()), None);
-            }
-            let Some(direction) = bit(key, depth + prefix.len()) else {
-                return (Some(node.clone()), None);
-            };
-            let (child, previous) =
-                remove::<H>(if direction { right } else { left }, key, depth + prefix.len() + 1);
-            if previous.is_none() {
-                return (Some(node.clone()), None);
-            }
-            let replacement = if let Some(child) = child {
-                let (left, right) =
-                    if direction { (left.clone(), child) } else { (child, right.clone()) };
-                Node::branch::<H>(prefix.clone(), left, right)
-            } else {
-                let survivor = if direction { left } else { right };
-                match survivor.as_ref() {
-                    Node::Leaf { .. } => survivor.clone(),
-                    Node::Branch { prefix: child_prefix, left, right, .. } => {
-                        let mut merged = prefix.clone();
-                        merged.push(!direction);
-                        merged.extend(child_prefix);
-                        Node::branch::<H>(merged, left.clone(), right.clone())
-                    }
+fn remove<H: TreeHasher>(root: &Arc<Node>, key: &[u8]) -> (Option<Arc<Node>>, Option<B256>) {
+    let mut node = root;
+    let mut depth = 0;
+    let mut path = Vec::new();
+    let previous = loop {
+        match node.as_ref() {
+            Node::Leaf { key: stored, value, .. } => {
+                if stored.as_ref() != key {
+                    return (Some(root.clone()), None);
                 }
-            };
-            (Some(replacement), previous)
+                break *value;
+            }
+            Node::Branch { prefix, left, right, .. } => {
+                if !matches_prefix(key, depth, prefix) {
+                    return (Some(root.clone()), None);
+                }
+                let Some(direction) = bit(key, depth + prefix.len()) else {
+                    return (Some(root.clone()), None);
+                };
+                path.push((prefix, if direction { left } else { right }, direction));
+                node = if direction { right } else { left };
+                depth += prefix.len() + 1;
+            }
         }
+    };
+    let mut replacement = None;
+    while let Some((prefix, sibling, direction)) = path.pop() {
+        replacement = Some(if let Some(child) = replacement {
+            let (left, right) =
+                if direction { (sibling.clone(), child) } else { (child, sibling.clone()) };
+            Node::branch::<H>(prefix.clone(), left, right)
+        } else {
+            match sibling.as_ref() {
+                Node::Leaf { .. } => sibling.clone(),
+                Node::Branch { prefix: child_prefix, left, right, .. } => {
+                    let mut merged = prefix.clone();
+                    merged.push(!direction);
+                    merged.extend(child_prefix);
+                    Node::branch::<H>(merged, left.clone(), right.clone())
+                }
+            }
+        });
     }
+    (replacement, Some(previous))
 }
 
 fn build<H: TreeHasher>(entries: &[(Vec<u8>, B256)], depth: usize) -> Arc<Node> {
-    if entries.len() == 1 {
-        return Node::leaf::<H>(entries[0].0.clone().into_boxed_slice(), entries[0].1);
+    enum Task<'a> {
+        Build(&'a [(Vec<u8>, B256)], usize),
+        Branch(Vec<bool>),
     }
-    let first = &entries[0].0;
-    let last = &entries[entries.len() - 1].0;
-    let split = (depth..first.len().min(last.len()) * 8)
-        .find(|i| bit(first, *i) != bit(last, *i))
-        .expect("validated prefix-free keys");
-    let middle = entries.partition_point(|(key, _)| !bit(key, split).unwrap());
-    let prefix = (depth..split).map(|i| bit(first, i).unwrap()).collect();
-    Node::branch::<H>(
-        prefix,
-        build::<H>(&entries[..middle], split + 1),
-        build::<H>(&entries[middle..], split + 1),
-    )
+    let mut tasks = vec![Task::Build(entries, depth)];
+    let mut nodes = Vec::new();
+    while let Some(task) = tasks.pop() {
+        match task {
+            Task::Build(entries, depth) => {
+                if entries.len() == 1 {
+                    nodes.push(Node::leaf::<H>(
+                        entries[0].0.clone().into_boxed_slice(),
+                        entries[0].1,
+                    ));
+                    continue;
+                }
+                let first = &entries[0].0;
+                let last = &entries[entries.len() - 1].0;
+                let split = (depth..first.len().min(last.len()) * 8)
+                    .find(|i| bit(first, *i) != bit(last, *i))
+                    .expect("validated prefix-free keys");
+                let middle = entries.partition_point(|(key, _)| !bit(key, split).unwrap());
+                let prefix = (depth..split).map(|i| bit(first, i).unwrap()).collect();
+                tasks.push(Task::Branch(prefix));
+                tasks.push(Task::Build(&entries[middle..], split + 1));
+                tasks.push(Task::Build(&entries[..middle], split + 1));
+            }
+            Task::Branch(prefix) => {
+                let right = nodes.pop().unwrap();
+                let left = nodes.pop().unwrap();
+                nodes.push(Node::branch::<H>(prefix, left, right));
+            }
+        }
+    }
+    nodes.pop().unwrap()
 }
