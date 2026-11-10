@@ -23,6 +23,7 @@ alloy-eip7928 = { version = "0.4.10", default-features = false, features = ["rlp
 rocksdb = { version = "0.24", default-features = false, features = ["lz4", "zstd", "bindgen-runtime"], optional = true }
 
 [dev-dependencies]
+criterion = "0.8.2"
 proptest = "1.7"
 serde_json = "1.0"
 tempfile = "3.20"
@@ -45,3 +46,26 @@ missing_const_for_fn = "warn"
 use_self = "warn"
 redundant_clone = "warn"
 result_large_err = "allow"
+
+[[bench]]
+name = "tree"
+harness = false
+
+[[bench]]
+name = "state"
+harness = false
+
+[[bench]]
+name = "migration"
+harness = false
+required-features = ["migration"]
+
+[[bench]]
+name = "replay"
+harness = false
+required-features = ["bal"]
+
+[[bench]]
+name = "persistence"
+harness = false
+required-features = ["persistence"]

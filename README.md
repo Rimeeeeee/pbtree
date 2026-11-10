@@ -4,15 +4,6 @@ Client-independent experimental Partitioned Binary Tree implementation for
 [EIP-8297](https://eips.ethereum.org/EIPS/eip-8297) and canonical migration/replay
 primitives for [EIP-8347](https://eips.ethereum.org/EIPS/eip-8347).
 
-This is a standalone PBT library. Its root Cargo package, `src/`, `tests/`,
-and repository tooling follow the layout of
-[alloy-rs/trie](https://github.com/alloy-rs/trie). Source files in `src/` implement
-the PBT. Optional anchor verification uses the published `alloy-trie` dependency.
-
-The initial PBT source was extracted from Reth commit
-`148ae4124b` (`crates/trie/pbt`). Original Reth MIT/Apache licenses are retained
-in this package. Independent EELS vector provenance is in `testdata/README.md`.
-
 ## Features
 
 - Default: canonical persistent binary tree, proofs, Ethereum state embedding,
@@ -53,6 +44,10 @@ cargo test -p pbt
 cargo test -p pbt --all-features
 cargo clippy -p pbt --all-features --all-targets -- -D warnings
 ```
+
+Run the tree and state benchmarks with `cargo bench`. Enable the optional
+migration, BAL replay, and persistence benchmarks with `cargo bench --all-features`.
+
 
 Rust 1.96 or newer is required for this package. Native persistence also requires
 a C++ compiler and libclang. Both EIPs are drafts; BLAKE3 is a reference configuration, not a finalized network

@@ -5,7 +5,7 @@ use pbt::{AccountData, BinaryTree, Blake3Hasher, StateTree, key};
 use serde_json::Value;
 
 fn vectors() -> Value {
-    serde_json::from_str(include_str!("../testdata/binary_trie_vectors.json")).unwrap()
+    serde_json::from_str(include_str!("testdata/binary_trie_vectors.json")).unwrap()
 }
 
 fn bytes(value: &Value) -> Vec<u8> {
