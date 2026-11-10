@@ -1,0 +1,47 @@
+[package]
+name = "pbt"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Rimeeeeee/pbtree"
+description = "Partitioned binary Ethereum state commitment and offline migration primitives"
+
+[dependencies]
+alloy-primitives = { version = "1.6.1", default-features = false, features = ["std"] }
+blake3 = "1.8"
+imbl = "7"
+thiserror = { version = "2.0.20", default-features = false, features = ["std"] }
+
+# migration
+alloy-trie = { version = "0.9.8", default-features = false, features = ["std", "ethereum"], optional = true }
+
+# bal
+alloy-eip7928 = { version = "0.4.10", default-features = false, features = ["rlp"], optional = true }
+
+# persistence
+rocksdb = { version = "0.24", default-features = false, features = ["lz4", "zstd", "bindgen-runtime"], optional = true }
+
+[dev-dependencies]
+proptest = "1.7"
+serde_json = "1.0"
+tempfile = "3.20"
+
+[features]
+default = []
+migration = ["dep:alloy-trie"]
+bal = ["dep:alloy-eip7928"]
+persistence = ["migration", "dep:rocksdb"]
+
+[lints.rust]
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+missing_const_for_fn = "warn"
+use_self = "warn"
+redundant_clone = "warn"
+result_large_err = "allow"
