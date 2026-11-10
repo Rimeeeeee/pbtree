@@ -31,6 +31,7 @@ pub struct NodeDatabase {
 
 impl NodeDatabase {
     /// Opens the native database below an existing directory, sharing its process-local lock.
+    /// Upgrades version 2 stores, recovering orphan subtrees before the next save.
     /// Unknown schema versions and inaccessible directories are errors.
     pub fn open(path: &Path) -> Result<Arc<Self>, NodeError> {
         // RocksDB owns an exclusive file lock. Reopening a store in this process must share it.
@@ -49,12 +50,15 @@ impl NodeDatabase {
         let db = DB::open(&options, path.join("nodes"))?;
         match db.get(b"schema")? {
             Some(version) if version.as_slice() == STORE_VERSION.to_be_bytes() => {}
-            Some(_) => {
+            Some(version) if version.as_slice() != 2u32.to_be_bytes() => {
                 return Err(ArtifactError::Invalid("unsupported PBT database version").into());
             }
-            None => {
+            _ => {
+                // A legacy store may contain orphan parents whose children were
+                // swept before a crash. Recover before trusting existing subtrees.
                 let mut batch = WriteBatch::default();
                 batch.put(b"schema", STORE_VERSION.to_be_bytes());
+                batch.put(GC_PENDING, []);
                 write(&db, batch)?;
             }
         }
@@ -99,6 +103,11 @@ impl NodeDatabase {
             if size > limits.max_code_size || total_code > limits.max_total_code_size {
                 return Err(ArtifactError::ResourceLimit.into());
             }
+        }
+        // A partial sweep can leave an unregistered parent after deleting its children.
+        // Finish collection before save can mistake that parent for a complete subtree.
+        if self.db.get(GC_PENDING)?.is_some() {
+            self.collect::<H>()?;
         }
         let mut stack: Vec<_> =
             state.tree().root.as_deref().map(|node| (node, false)).into_iter().collect();
@@ -312,7 +321,16 @@ impl NodeDatabase {
     /// Destructively reclaims nodes unreachable from every registered root.
     /// Hold `mutation` throughout collection. Interrupted marking deletes nothing.
     /// A corrupt retained node fails marking before the sweep begins.
+    /// An interrupted sweep is completed before the next save can register a root.
     pub fn collect<H: TreeHasher>(&self) -> Result<(), NodeError> {
+        self.collect_with::<H>(WRITE_BATCH_BYTES, || Ok(()))
+    }
+
+    fn collect_with<H: TreeHasher>(
+        &self,
+        sweep_batch_bytes: usize,
+        mut after_sweep_batch: impl FnMut() -> Result<(), NodeError>,
+    ) -> Result<(), NodeError> {
         self.delete_prefix(MARK)?;
         for root in self.hashes(ROOT) {
             let root = root?;
@@ -340,19 +358,28 @@ impl NodeDatabase {
             }
             write(&self.db, batch)?;
         }
+        // Persist this before the first deletion and keep it until every sweep batch
+        // and marker cleanup has reached the WAL, including across process restarts.
+        let mut batch = WriteBatch::default();
+        batch.put(GC_PENDING, []);
+        write(&self.db, batch)?;
         let mut batch = WriteBatch::default();
         for hash in self.hashes(NODE) {
             let hash = hash?;
             if self.db.get_pinned(database_key(MARK, hash))?.is_none() {
                 batch.delete(database_key(NODE, hash));
             }
-            if batch.size_in_bytes() >= WRITE_BATCH_BYTES {
+            if batch.size_in_bytes() >= sweep_batch_bytes {
                 write(&self.db, batch)?;
+                after_sweep_batch()?;
                 batch = WriteBatch::default();
             }
         }
         write(&self.db, batch)?;
-        self.delete_prefix(MARK)
+        self.delete_prefix(MARK)?;
+        let mut batch = WriteBatch::default();
+        batch.delete(GC_PENDING);
+        write(&self.db, batch)
     }
 
     fn delete_prefix(&self, prefix: u8) -> Result<(), NodeError> {
@@ -429,10 +456,12 @@ enum StoredNode {
 }
 
 /// Version of the native RocksDB node/marker format, distinct from artifact encoding.
-pub const STORE_VERSION: u32 = 2;
+pub const STORE_VERSION: u32 = 3;
 const NODE: u8 = b'n';
 const ROOT: u8 = b'r';
 const MARK: u8 = b'g';
+// This metadata key deliberately does not share the node/root/mark hash prefixes.
+const GC_PENDING: &[u8] = b"pending_gc";
 const LEAF: u8 = 0;
 const BRANCH: u8 = 1;
 const WRITE_BATCH_BYTES: usize = 8 * 1024 * 1024;
@@ -455,6 +484,78 @@ mod tests {
     use super::*;
     use crate::{AccountData, Blake3Hasher, migration::Artifacts};
     use alloy_primitives::Bytes;
+
+    #[test]
+    fn interrupted_sweep_recovers_before_resaving_orphan_subtrees() {
+        for legacy in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let database = NodeDatabase::open(directory.path()).unwrap();
+            let limits = DecodeLimits::default();
+            let mut retained = StateTree::<Blake3Hasher>::new();
+            retained
+                .set_account(
+                    Address::repeat_byte(2),
+                    AccountData { nonce: 1, ..Default::default() },
+                )
+                .unwrap();
+            let mut orphan = StateTree::<Blake3Hasher>::new();
+            let address = Address::repeat_byte(1);
+            orphan.set_account(address, AccountData { nonce: 1, ..Default::default() }).unwrap();
+            for slot in 64..192 {
+                orphan.set_storage(address, U256::from(slot), B256::repeat_byte(1)).unwrap();
+            }
+            // Keep the parent late in hash order, while the first sweep batch
+            // durably deletes a child. This is the state left by an interrupted GC.
+            for nonce in 1..1024 {
+                orphan.set_account(address, AccountData { nonce, ..Default::default() }).unwrap();
+                if orphan.root()[0] >= 0xf8 {
+                    break;
+                }
+            }
+            assert!(orphan.root()[0] >= 0xf8);
+            {
+                let _guard = database.mutation.lock().unwrap();
+                database.save(&retained, limits).unwrap();
+                database.save(&orphan, limits).unwrap();
+                database.remove_root(orphan.root()).unwrap();
+                let result = database.collect_with::<Blake3Hasher>(1, || {
+                    Err(ArtifactError::Invalid("interrupted sweep").into())
+                });
+                assert!(result.is_err());
+                assert!(database.db.get(GC_PENDING).unwrap().is_some());
+                assert!(database.db.get(database_key(NODE, orphan.root())).unwrap().is_some());
+                assert!(
+                    database
+                        .load::<Blake3Hasher>(orphan.root(), orphan.tree().len(), limits)
+                        .is_err()
+                );
+                if legacy {
+                    // Stores written by the previous implementation had no GC markers.
+                    let mut batch = WriteBatch::default();
+                    batch.delete(GC_PENDING);
+                    batch.put(b"schema", 2u32.to_be_bytes());
+                    write(&database.db, batch).unwrap();
+                }
+            }
+            drop(database);
+            let database = NodeDatabase::open(directory.path()).unwrap();
+            let _guard = database.mutation.lock().unwrap();
+            database.save(&orphan, limits).unwrap();
+            assert!(database.db.get(GC_PENDING).unwrap().is_none());
+            for state in [&retained, &orphan] {
+                let restored = database
+                    .load::<Blake3Hasher>(state.root(), state.tree().len(), limits)
+                    .unwrap();
+                assert_eq!(
+                    Artifacts::from_state(&restored).unwrap(),
+                    Artifacts::from_state(state).unwrap()
+                );
+            }
+            let sequence = database.db.latest_sequence_number();
+            database.save(&orphan, limits).unwrap();
+            assert_eq!(database.db.latest_sequence_number() - sequence, 1);
+        }
+    }
 
     #[test]
     fn checkpoints_write_only_changed_paths_and_collect_unshared_nodes() {
