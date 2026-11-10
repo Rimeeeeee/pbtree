@@ -3,7 +3,10 @@
 use crate::{StateError, StateTree, TreeHasher};
 use alloy_eip7928::{AccountChanges, BlockAccessIndex, compute_block_access_list_hash};
 use alloy_primitives::B256;
-use std::{collections::BTreeMap, num::NonZeroUsize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroUsize,
+};
 
 /// Replays authenticated post-values without EVM execution.
 ///
@@ -138,28 +141,28 @@ impl<H: TreeHasher> ReplayChain<H> {
     /// unknown block fail without dropping layers. A finality violation requires a new anchor.
     pub fn finalize(&mut self, hash: B256) -> Result<StateTree<H>, ReplayError> {
         let state = self.state(hash).ok_or(ReplayError::UnknownParent)?.clone();
-        let retained: Vec<_> = self
-            .blocks
-            .keys()
-            .copied()
-            .filter(|candidate| self.descends_from(*candidate, hash))
-            .collect();
-        self.blocks.retain(|candidate, _| retained.binary_search(candidate).is_ok());
+        if hash == self.finalized {
+            return Ok(state);
+        }
+        // Visit each descendant once instead of walking the ancestry of every layer.
+        let mut children = BTreeMap::<_, Vec<_>>::new();
+        for (candidate, layer) in &self.blocks {
+            if let Some(parent) = layer.parent {
+                children.entry(parent).or_default().push(*candidate);
+            }
+        }
+        let mut retained = BTreeSet::new();
+        let mut pending = vec![hash];
+        while let Some(candidate) = pending.pop() {
+            retained.insert(candidate);
+            if let Some(descendants) = children.remove(&candidate) {
+                pending.extend(descendants);
+            }
+        }
+        self.blocks.retain(|candidate, _| retained.contains(candidate));
         self.blocks.get_mut(&hash).unwrap().parent = None;
         self.finalized = hash;
         Ok(state)
-    }
-
-    fn descends_from(&self, mut candidate: B256, ancestor: B256) -> bool {
-        loop {
-            if candidate == ancestor {
-                return true;
-            }
-            let Some(parent) = self.blocks.get(&candidate).and_then(|layer| layer.parent) else {
-                return false;
-            };
-            candidate = parent;
-        }
     }
 }
 

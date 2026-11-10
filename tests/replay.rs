@@ -20,6 +20,47 @@ fn balance(address: Address, value: u64) -> AccountChanges {
 }
 
 #[test]
+fn finality_prunes_long_forks_independently_of_hash_order() {
+    const LENGTH: usize = 2048;
+    let hashes: Vec<_> = (0..LENGTH)
+        .map(|index| alloy_primitives::keccak256((index as u64).to_be_bytes()))
+        .collect();
+    let mut chain = ReplayChain::<Blake3Hasher>::with_limit(
+        hashes[0],
+        StateTree::new(),
+        NonZeroUsize::new(LENGTH * 2).unwrap(),
+    );
+    let bal_hash = compute_block_access_list_hash(&[]);
+    for pair in hashes.windows(2) {
+        chain.insert(pair[1], pair[0], &[], bal_hash).unwrap();
+    }
+    let forks: Vec<_> = (0..LENGTH)
+        .step_by(64)
+        .map(|index| {
+            let hash = alloy_primitives::keccak256((index as u64 + LENGTH as u64).to_be_bytes());
+            chain.insert(hash, hashes[index], &[], bal_hash).unwrap();
+            (index, hash)
+        })
+        .collect();
+    chain.finalize(hashes[0]).unwrap();
+    assert!(matches!(chain.finalize(B256::ZERO), Err(ReplayError::UnknownParent)));
+    for hash in &hashes {
+        assert!(chain.state(*hash).is_some());
+    }
+    let midpoint = LENGTH / 2;
+    chain.finalize(hashes[midpoint]).unwrap();
+    for (index, hash) in hashes.iter().enumerate() {
+        assert_eq!(chain.state(*hash).is_some(), index >= midpoint);
+    }
+    for (index, hash) in forks {
+        assert_eq!(chain.state(hash).is_some(), index >= midpoint);
+    }
+    chain.finalize(hashes[LENGTH - 1]).unwrap();
+    assert!(chain.state(hashes[LENGTH - 1]).is_some());
+    assert!(chain.state(hashes[midpoint]).is_none());
+}
+
+#[test]
 fn fresh_transfer_writes_both_header_leaves() {
     let address = Address::repeat_byte(1);
     let bal = vec![balance(address, 10)];
