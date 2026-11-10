@@ -48,6 +48,9 @@ cargo clippy -p pbt --all-features --all-targets -- -D warnings
 Run the tree and state benchmarks with `cargo bench`. Enable the optional
 migration, BAL replay, and persistence benchmarks with `cargo bench --all-features`.
 
+Coverage-guided tree and artifact fuzzing runs in CI. Local commands and input
+formats are documented in [fuzz/README.md](fuzz/README.md).
+
 
 Rust 1.96 or newer is required for this package. Native persistence also requires
 a C++ compiler and libclang. Both EIPs are drafts; BLAKE3 is a reference configuration, not a finalized network

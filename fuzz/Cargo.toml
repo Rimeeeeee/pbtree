@@ -1,0 +1,29 @@
+[package]
+name = "pbt-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+alloy-primitives = { version = "1.6.1", default-features = false, features = ["std"] }
+libfuzzer-sys = "0.4"
+pbt = { path = "..", features = ["migration"] }
+
+[workspace]
+
+[[bin]]
+name = "tree_ops"
+path = "fuzz_targets/tree_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "artifact_decode"
+path = "fuzz_targets/artifact_decode.rs"
+test = false
+doc = false
+bench = false
