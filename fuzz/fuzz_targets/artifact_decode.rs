@@ -41,14 +41,14 @@ const ROOTS: [(B256, B256); 8] = [
     ),
 ];
 
-fn check(data: &[u8], canonical: bool) {
-    assert!(!canonical || data.len() >= 5, "truncated canonical seed");
+fn check(data: &[u8], expected: Option<bool>) {
+    assert!(expected != Some(true) || data.len() >= 5, "truncated canonical seed");
     if data.len() < 5 {
         return;
     }
     let (root, mpt) = ROOTS[usize::from(data[0]) % ROOTS.len()];
     let length = u32::from_le_bytes(data[1..5].try_into().unwrap()) as usize;
-    assert!(!canonical || length <= data.len() - 5, "truncated canonical snapshot");
+    assert!(expected != Some(true) || length <= data.len() - 5, "truncated canonical snapshot");
     if length > data.len() - 5 {
         return;
     }
@@ -64,8 +64,8 @@ fn check(data: &[u8], canonical: bool) {
     };
     let restored = artifacts.restore::<Blake3Hasher>(root, limits);
     let verified = artifacts.verify::<Blake3Hasher>(mpt, limits);
-    if canonical {
-        assert!(restored.is_ok(), "canonical seed rejected");
+    if let Some(expected) = expected {
+        assert_eq!(restored.is_ok(), expected, "seed acceptance changed");
     }
     assert_eq!(restored.is_ok(), verified.is_ok(), "PBT and MPT authentication disagree");
     if let Ok(state) = restored {
@@ -96,8 +96,25 @@ fuzz_target!(|data: &[u8]| {
             include_bytes!("../seeds/artifact_decode/canonical-7"),
         ];
         for seed in seeds {
-            check(seed, true);
+            check(seed, Some(true));
+        }
+        let rejected: [&[u8]; 12] = [
+            include_bytes!("../seeds/artifact_decode/reject-truncated-header"),
+            include_bytes!("../seeds/artifact_decode/reject-oversized-snapshot-length"),
+            include_bytes!("../seeds/artifact_decode/reject-truncated-snapshot"),
+            include_bytes!("../seeds/artifact_decode/reject-truncated-preimages"),
+            include_bytes!("../seeds/artifact_decode/reject-snapshot-trailing-byte"),
+            include_bytes!("../seeds/artifact_decode/reject-preimages-trailing-byte"),
+            include_bytes!("../seeds/artifact_decode/reject-unknown-tag"),
+            include_bytes!("../seeds/artifact_decode/reject-wrong-trusted-root"),
+            include_bytes!("../seeds/artifact_decode/reject-preimage-mismatch"),
+            include_bytes!("../seeds/artifact_decode/reject-snapshot-mismatch"),
+            include_bytes!("../seeds/artifact_decode/reject-empty-snapshot"),
+            include_bytes!("../seeds/artifact_decode/reject-empty-preimages"),
+        ];
+        for seed in rejected {
+            check(seed, Some(false));
         }
     });
-    check(data, false);
+    check(data, None);
 });

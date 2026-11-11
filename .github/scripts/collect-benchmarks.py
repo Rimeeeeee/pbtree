@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Collect Criterion means and confidence intervals without depending on console output."""
+
+import argparse
+import hashlib
+import json
+import math
+import platform
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def collect(root, criterion, commit):
+    benchmarks = []
+    for estimates_path in sorted(criterion.glob("**/new/estimates.json")):
+        metadata = json.loads(estimates_path.with_name("benchmark.json").read_text())
+        mean = json.loads(estimates_path.read_text())["mean"]
+        interval = mean["confidence_interval"]
+        values = [interval["lower_bound"], mean["point_estimate"], interval["upper_bound"]]
+        if not all(math.isfinite(value) and value > 0 for value in values):
+            raise ValueError(f"Invalid estimate for {metadata['full_id']}")
+        if not values[0] <= values[1] <= values[2] or interval["confidence_level"] != 0.95:
+            raise ValueError(f"Invalid confidence interval for {metadata['full_id']}")
+        benchmarks.append(dict(id=metadata["full_id"], low_ns=values[0], mean_ns=values[1], high_ns=values[2]))
+    if not benchmarks or len({row["id"] for row in benchmarks}) != len(benchmarks):
+        raise ValueError("Missing or duplicate Criterion results")
+    digest = hashlib.sha256()
+    for source in sorted((root / "benches").rglob("*.rs")):
+        digest.update(source.relative_to(root).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(source.read_bytes().replace(b"\r\n", b"\n"))
+    cpu = platform.processor()
+    cpuinfo = Path("/proc/cpuinfo")
+    if cpuinfo.exists():
+        cpu = next((line.split(":", 1)[1].strip() for line in cpuinfo.read_text().splitlines() if line.startswith("model name")), cpu)
+    return dict(
+        commit=commit,
+        measured_at=datetime.now(timezone.utc).isoformat(),
+        suite_hash=digest.hexdigest(),
+        toolchain=subprocess.check_output(["rustc", "--version"], text=True).strip(),
+        platform=platform.platform(),
+        cpu=cpu,
+        profile="release; all features; 10 samples; 0.5s warm-up; 1s measurement; 95% confidence intervals",
+        benchmarks=sorted(benchmarks, key=lambda row: row["id"]),
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--criterion", type=Path, required=True)
+    parser.add_argument("--commit", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(collect(args.root, args.criterion, args.commit), indent=2) + "\n")
+
+
+if __name__ == "__main__":
+    main()

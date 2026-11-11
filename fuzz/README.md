@@ -16,8 +16,9 @@ one with `cargo +nightly fuzz run <target> <path-to-reproducer>`.
 
 - `tree_ops`: bounded insert/replace/remove/read sequences with variable-length
   keys, prefix conflicts, zero values, snapshots, iteration, and tampered proofs.
-  Roots are compared with an independently encoded reference tree. The four
-  seeds cover varied mutations, repeated keys, and prefix conflicts. Keys are
+  Roots are compared with an independently encoded reference tree. Fourteen
+  seeds cover varied mutations, repeated keys, prefix conflicts in both orders,
+  branch collapse, empty reads, truncated records, and all-zero/all-one values. Keys are
   limited to eight bytes and sequences to 128 operations; deep/max-length keys
   are covered by the regular tree regression tests.
 - `artifact_decode`: mutations of canonical snapshot/preimage pairs. Restoration
@@ -25,13 +26,17 @@ one with `cargo +nightly fuzz run <target> <path-to-reproducer>`.
   accepted artifacts must re-encode byte-for-byte. Eight seeds cover empty state,
   account headers, zero code, PUSH data spanning chunks, 257 code chunks,
   delegation, shared code, and inline/overflow storage including `U256::MAX`.
-  Every run also checks that all eight original seeds are accepted.
+  Every run also checks that all eight original seeds are accepted and twelve
+  curated malformed artifacts are rejected (truncation, trailing bytes, unknown
+  tags, missing preimages, and commitment/preimage mismatches).
 
 These seeds are the generated cases used in the original local fuzz campaigns;
 they are separate from the independent EELS vectors under `tests/testdata/`.
 The artifact input is a one-byte fixture selector, a four-byte little-endian
 snapshot length, snapshot bytes, then preimage bytes. Each tree operation uses
 up to 42 bytes: control, key length, eight key bytes, then 32 value bytes.
+Regenerate the 22 edge-case seeds with `python3 fuzz/generate-seeds.py`; CI checks
+that these generated inputs match the checked-in files.
 
 CI runs each target for 60 seconds on pushes to `main` and pull requests. A
 failure fails the job; logs, discovered corpus inputs, and reproducers are saved

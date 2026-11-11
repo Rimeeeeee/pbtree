@@ -2,3 +2,4 @@
 .vscode
 .idea
 .zed
+__pycache__/
