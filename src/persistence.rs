@@ -47,7 +47,7 @@ impl NodeDatabase {
         }
         let mut options = Options::default();
         options.create_if_missing(true);
-        let db = DB::open(&options, path.join("nodes"))?;
+        let db = DB::open_cf(&options, path.join("nodes"), ["default"])?;
         match db.get(b"schema")? {
             Some(version) if version.as_slice() == STORE_VERSION.to_be_bytes() => {}
             Some(version) if version.as_slice() != 2u32.to_be_bytes() => {
@@ -94,15 +94,12 @@ impl NodeDatabase {
         if state.account_count() > limits.max_accounts || state.tree().len() > limits.max_leaves {
             return Err(ArtifactError::ResourceLimit.into());
         }
-        if state.accounts().any(|(_, account)| account.is_empty()) {
+        let (empty_accounts, total_code, max_code) = state.validation_stats();
+        if empty_accounts != 0 {
             return Err(ArtifactError::Invalid("empty anchor account").into());
         }
-        let mut total_code = 0usize;
-        for size in state.code_sizes() {
-            total_code = total_code.checked_add(size).ok_or(ArtifactError::ResourceLimit)?;
-            if size > limits.max_code_size || total_code > limits.max_total_code_size {
-                return Err(ArtifactError::ResourceLimit.into());
-            }
+        if max_code > limits.max_code_size || total_code > limits.max_total_code_size as u128 {
+            return Err(ArtifactError::ResourceLimit.into());
         }
         // A partial sweep can leave an unregistered parent after deleting its children.
         // Finish collection before save can mistake that parent for a complete subtree.
@@ -114,7 +111,7 @@ impl NodeDatabase {
         let mut batch = WriteBatch::default();
         while let Some((node, expanded)) = stack.pop() {
             let hash = node.hash();
-            if self.db.get_pinned(database_key(NODE, hash))?.is_some() {
+            if !expanded && self.db.get_pinned(database_key(NODE, hash))?.is_some() {
                 continue;
             }
             // Publish children before parents so a cancelled multi-batch save can be retried.
@@ -162,7 +159,7 @@ impl NodeDatabase {
                     let start = encoded.len();
                     encoded.resize(start + prefix.len().div_ceil(8), 0);
                     for (index, bit) in prefix.iter().enumerate() {
-                        encoded[start + index / 8] |= u8::from(*bit) << (7 - index % 8);
+                        encoded[start + index / 8] |= u8::from(bit) << (7 - index % 8);
                     }
                     encoded.extend_from_slice(left.hash().as_slice());
                     encoded.extend_from_slice(right.hash().as_slice());
@@ -203,34 +200,44 @@ impl NodeDatabase {
             stack.push((root, 0usize));
         }
         let mut visited = 0usize;
-        while let Some((hash, depth)) = stack.pop() {
-            visited = visited.checked_add(1).ok_or(ArtifactError::ResourceLimit)?;
-            if visited > count.saturating_mul(2) || depth > STORAGE_KEY_LENGTH * 8 {
-                return Err(ArtifactError::ResourceLimit.into());
-            }
-            match self.node::<H>(hash)? {
-                StoredNode::Leaf { key, value, preimage } => {
-                    if leaves.len() >= count || leaves.insert(key.clone(), value).is_some() {
-                        return Err(ArtifactError::Invalid("duplicate or excess PBT leaf").into());
-                    }
-                    if let Some(preimage) = preimage {
-                        if key[0] == key::ACCOUNT_ZONE {
-                            addresses.insert(
-                                B256::from_slice(&key[1..33]),
-                                Address::from_slice(&preimage),
+        while !stack.is_empty() {
+            let frontier = stack.split_off(stack.len().saturating_sub(256));
+            let keys: Vec<_> = frontier.iter().map(|(hash, _)| database_key(NODE, *hash)).collect();
+            let cf = self.db.cf_handle("default").expect("default column family is open");
+            let values = self.db.batched_multi_get_cf(cf, &keys, false);
+            for ((hash, depth), value) in frontier.into_iter().zip(values) {
+                visited = visited.checked_add(1).ok_or(ArtifactError::ResourceLimit)?;
+                if visited > count.saturating_mul(2) || depth > STORAGE_KEY_LENGTH * 8 {
+                    return Err(ArtifactError::ResourceLimit.into());
+                }
+                let value = value?.ok_or(ArtifactError::Invalid("missing PBT node"))?;
+                match Self::decode_node::<H>(hash, &value)? {
+                    StoredNode::Leaf { key, value, preimage } => {
+                        if leaves.len() >= count || leaves.insert(key.clone(), value).is_some() {
+                            return Err(
+                                ArtifactError::Invalid("duplicate or excess PBT leaf").into()
                             );
-                            if addresses.len() > limits.max_accounts {
-                                return Err(ArtifactError::ResourceLimit.into());
+                        }
+                        if let Some(preimage) = preimage {
+                            if key[0] == key::ACCOUNT_ZONE {
+                                addresses.insert(
+                                    B256::from_slice(&key[1..33]),
+                                    Address::from_slice(&preimage),
+                                );
+                                if addresses.len() > limits.max_accounts {
+                                    return Err(ArtifactError::ResourceLimit.into());
+                                }
+                            } else {
+                                slots.insert(key, U256::from_be_slice(&preimage));
                             }
-                        } else {
-                            slots.insert(key, U256::from_be_slice(&preimage));
                         }
                     }
-                }
-                StoredNode::Branch { bits, left, right } => {
-                    let depth = depth.checked_add(bits + 1).ok_or(ArtifactError::ResourceLimit)?;
-                    stack.push((right, depth));
-                    stack.push((left, depth));
+                    StoredNode::Branch { bits, left, right } => {
+                        let depth =
+                            depth.checked_add(bits + 1).ok_or(ArtifactError::ResourceLimit)?;
+                        stack.push((right, depth));
+                        stack.push((left, depth));
+                    }
                 }
             }
         }
@@ -245,10 +252,14 @@ impl NodeDatabase {
             .db
             .get_pinned(database_key(NODE, hash))?
             .ok_or(ArtifactError::Invalid("missing PBT node"))?;
+        Self::decode_node::<H>(hash, &value)
+    }
+
+    fn decode_node<H: TreeHasher>(hash: B256, value: &[u8]) -> Result<StoredNode, NodeError> {
         if value.len() > MAX_NODE_BYTES {
             return Err(ArtifactError::ResourceLimit.into());
         }
-        let mut reader = Reader(&value);
+        let mut reader = Reader(value);
         let tag = reader.take(1)?[0];
         let length = usize::from(u16::from_be_bytes(reader.array()?));
         let node = match tag {

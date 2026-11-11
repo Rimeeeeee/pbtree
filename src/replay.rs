@@ -22,6 +22,7 @@ pub fn replay<H: TreeHasher>(
     }
     let mut previous = None;
     let mut state = parent.clone();
+    state.begin_batch();
     for changes in bal {
         if previous.is_some_and(|address| address >= changes.address) {
             return Err(ReplayError::InvalidOrder);
@@ -66,6 +67,7 @@ pub fn replay<H: TreeHasher>(
             }
         }
     }
+    state.finish_batch()?;
     Ok(state)
 }
 

@@ -5,6 +5,7 @@
 //! Client execution, header/finality validation and checkpoint publication remain client-owned.
 
 mod hash;
+mod prefix;
 pub use hash::{Blake3Hasher, TreeHasher};
 
 mod tree;
@@ -17,7 +18,11 @@ pub use proof::{Proof, ProofError, ProofStep, ProofTerminal};
 pub mod key;
 
 mod state;
-pub use state::{AccountData, StateError, StateTree};
+pub use state::{AccountData, StateError, StateTree, StateUpdate};
+
+/// Opt-in arena storage for comparing allocation/cache tradeoffs with the reference tree.
+#[cfg(feature = "experimental")]
+pub mod experimental;
 
 /// Canonical snapshot/preimage artifacts, bounded decoding, and dual-root verification.
 #[cfg(feature = "migration")]

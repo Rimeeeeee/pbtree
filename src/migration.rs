@@ -24,15 +24,18 @@ impl Artifacts {
     /// Serializes a complete anchor state satisfying EIP-7523 into canonical artifacts.
     pub fn from_state<H: TreeHasher>(state: &StateTree<H>) -> Result<Self, ArtifactError> {
         let mut snapshot = Vec::new();
-        let mut headers: Vec<_> = state.accounts().collect();
-        headers.sort_unstable_by_key(|(address, _)| key::account_hash::<H>(*address));
-        for (address, account) in &headers {
+        let mut headers: Vec<_> = state
+            .accounts()
+            .map(|(address, account)| (key::account_hash::<H>(address), address, account))
+            .collect();
+        headers.sort_unstable_by_key(|(hash, _, _)| *hash);
+        for (hash, address, account) in &headers {
             if account.is_empty() {
                 return Err(ArtifactError::Invalid("empty anchor account"));
             }
             let kind = if account.is_delegation() { 2 } else { u8::from(!account.code.is_empty()) };
             snapshot.push(kind);
-            snapshot.extend_from_slice(key::account_hash::<H>(*address).as_slice());
+            snapshot.extend_from_slice(hash.as_slice());
             put_integer(&mut snapshot, &account.nonce.to_be_bytes());
             put_integer(&mut snapshot, &account.balance.to_be_bytes::<32>());
             match kind {
@@ -54,15 +57,18 @@ impl Artifacts {
                 put_integer(&mut snapshot, value.as_slice());
             }
         }
-        let mut groups: BTreeMap<Vec<u8>, Vec<(u8, B256)>> = BTreeMap::new();
-        for (key, value) in state.tree().entries().filter(|(key, _)| key[0] != key::ACCOUNT_ZONE) {
-            groups
-                .entry(key[..key.len() - 1].to_vec())
-                .or_default()
-                .push((key[key.len() - 1], value));
-        }
+        let mut leaves =
+            state.tree().entries().filter(|(key, _)| key[0] != key::ACCOUNT_ZONE).peekable();
+        let mut entries = Vec::new();
         let mut storage_account: Option<B256> = None;
-        for (stem, entries) in groups {
+        while let Some((key, value)) = leaves.next() {
+            let stem = &key[..key.len() - 1];
+            entries.clear();
+            entries.push((key[key.len() - 1], value));
+            while leaves.peek().is_some_and(|(key, _)| &key[..key.len() - 1] == stem) {
+                let (key, value) = leaves.next().unwrap();
+                entries.push((key[key.len() - 1], value));
+            }
             if stem[0] == key::CODE_ZONE {
                 snapshot.push(3);
                 snapshot.extend_from_slice(&stem[1..]);
@@ -80,8 +86,8 @@ impl Artifacts {
                     snapshot.push((entries.len() - 1) as u8);
                 }
             }
-            for (index, value) in entries {
-                snapshot.push(index);
+            for (index, value) in &entries {
+                snapshot.push(*index);
                 put_integer(&mut snapshot, value.as_slice());
             }
         }
@@ -89,12 +95,15 @@ impl Artifacts {
         snapshot.extend_from_slice(state.root().as_slice());
 
         let mut preimages = Vec::new();
-        headers.sort_unstable_by_key(|(address, _)| keccak256(address));
-        for (address, _) in headers {
+        for (hash, address, _) in &mut headers {
+            *hash = keccak256(address);
+        }
+        headers.sort_unstable_by_key(|(hash, _, _)| *hash);
+        for (_, address, _) in headers {
             preimages.extend_from_slice(address.as_slice());
             let mut slots: Vec<_> =
                 state.storage_entries(address).map(|(slot, _)| B256::from(slot)).collect();
-            slots.sort_unstable_by_key(|slot| keccak256(slot));
+            slots.sort_by_cached_key(|slot| keccak256(slot));
             let count = u32::try_from(slots.len()).map_err(|_| ArtifactError::ResourceLimit)?;
             preimages.extend_from_slice(&count.to_be_bytes());
             for slot in slots {
@@ -157,6 +166,7 @@ fn decode_state<H: TreeHasher>(
 ) -> Result<StateTree<H>, ArtifactError> {
     let mut preimages = Reader(preimages);
     let mut state = StateTree::<H>::new();
+    state.begin_batch();
     let mut previous_account = None;
     let mut codes: BTreeMap<B256, Bytes> = BTreeMap::new();
     let mut total_code_size = 0usize;
@@ -224,6 +234,7 @@ fn decode_state<H: TreeHasher>(
             state.set_storage(address, slot, value)?;
         }
     }
+    state.finish_batch()?;
     // Equality of the exact leaf sets authenticates metadata and prevents surplus code,
     // storage in the wrong zone, noncanonical PUSH bytes, and unreferenced groups.
     if accounts != headers.len()
@@ -510,7 +521,7 @@ pub(crate) fn restore_leaves<H: TreeHasher>(
             return Err(ArtifactError::Invalid("invalid account preimage"));
         }
         let basic = leaves
-            .get(key::header_key::<H>(*address, key::BASIC_DATA_LEAF_KEY).as_slice())
+            .get(key::header_key_from_hash(*hash, key::BASIC_DATA_LEAF_KEY).as_slice())
             .copied()
             .unwrap_or_default();
         let mut metadata = Reader(&basic[4..16]);
@@ -518,9 +529,9 @@ pub(crate) fn restore_leaves<H: TreeHasher>(
         let nonce = u64::from_be_bytes(metadata.array()?);
         let balance = U256::from_be_slice(&basic[16..]);
         let code_hash =
-            leaves.get(key::header_key::<H>(*address, key::CODE_HASH_LEAF_KEY).as_slice());
+            leaves.get(key::header_key_from_hash(*hash, key::CODE_HASH_LEAF_KEY).as_slice());
         let delegation =
-            leaves.get(key::header_key::<H>(*address, key::DELEGATION_LEAF_KEY).as_slice());
+            leaves.get(key::header_key_from_hash(*hash, key::DELEGATION_LEAF_KEY).as_slice());
         let code = match (code_hash, delegation) {
             (Some(hash), None) if size == 0 && *hash == keccak256([]) => CodeRef::Empty,
             (Some(hash), None) if size > 0 => {
@@ -542,10 +553,11 @@ pub(crate) fn restore_leaves<H: TreeHasher>(
             return Err(ArtifactError::Invalid("empty anchor account"));
         }
         headers.insert(*hash, Header { nonce, balance, code });
-        for slot in 0..key::HEADER_STORAGE_SLOTS {
-            if leaves.contains_key(key::storage_key::<H>(*address, U256::from(slot)).as_slice()) {
-                plain_slots.entry(*address).or_default().push(B256::from(U256::from(slot)));
-            }
+        let first = key::header_key_from_hash(*hash, key::HEADER_STORAGE_OFFSET).to_vec();
+        let last = key::header_key_from_hash(*hash, key::HEADER_STORAGE_OFFSET + 63).to_vec();
+        for (key, _) in leaves.range(first..=last) {
+            let slot = key[33] - key::HEADER_STORAGE_OFFSET;
+            plain_slots.entry(*address).or_default().push(B256::from(U256::from(slot)));
         }
     }
     for (key, slot) in slots {
@@ -558,12 +570,12 @@ pub(crate) fn restore_leaves<H: TreeHasher>(
         plain_slots.entry(address).or_default().push(B256::from(slot));
     }
     let mut accounts: Vec<_> = addresses.values().copied().collect();
-    accounts.sort_unstable_by_key(|address| keccak256(address));
+    accounts.sort_by_cached_key(|address| keccak256(address));
     let mut preimages = Vec::new();
     for address in accounts {
         preimages.extend_from_slice(address.as_slice());
         let mut slots = plain_slots.remove(&address).unwrap_or_default();
-        slots.sort_unstable_by_key(|slot| keccak256(slot));
+        slots.sort_by_cached_key(|slot| keccak256(slot));
         let count = u32::try_from(slots.len()).map_err(|_| ArtifactError::ResourceLimit)?;
         preimages.extend_from_slice(&count.to_be_bytes());
         for slot in slots {

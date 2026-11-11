@@ -140,7 +140,42 @@ fn absence_and_tampered_proofs() {
     assert_eq!(proof.verify::<Blake3Hasher>(tree.root(), &[0, 0]), Err(ProofError::InvalidPath));
 }
 
+#[test]
+fn batches_validate_the_final_prefix_free_set_atomically() {
+    let mut tree = tree();
+    tree.insert(vec![1, 2], B256::repeat_byte(1)).unwrap();
+    let old = tree.clone();
+    tree.apply_updates([(vec![1], Some(B256::ZERO)), (vec![1, 2], None)]).unwrap();
+    assert_eq!(tree.entries().collect::<Vec<_>>(), vec![(&[1][..], B256::ZERO)]);
+    let before = tree.root();
+    assert_eq!(
+        tree.apply_updates([(vec![1, 2], Some(B256::ZERO))]),
+        Err(TreeError::PrefixConflict)
+    );
+    assert_eq!(tree.root(), before);
+    assert_eq!(old.get(&[1, 2]), Some(B256::repeat_byte(1)));
+}
+
 proptest! {
+    #[test]
+    fn adaptive_batches_match_final_map(
+        initial in collection::btree_map(any::<[u8; 2]>(), any::<[u8; 32]>(), 0..150),
+        updates in collection::vec((any::<[u8; 2]>(), proptest::option::of(any::<[u8; 32]>())), 0..200),
+    ) {
+        let mut model: BTreeMap<_, _> = initial.into_iter().map(|(key, value)| (key.to_vec(), B256::from(value))).collect();
+        let mut tree = BinaryTree::<Blake3Hasher>::from_sorted_entries(model.clone()).unwrap();
+        let snapshot = tree.clone();
+        let before = snapshot.root();
+        let changes: Vec<_> = updates.into_iter().map(|(key, value)| (key.to_vec(), value.map(B256::from))).collect();
+        for (key, value) in &changes {
+            if let Some(value) = value { model.insert(key.clone(), *value); } else { model.remove(key); }
+        }
+        tree.apply_updates(changes).unwrap();
+        let rebuilt = BinaryTree::<Blake3Hasher>::from_sorted_entries(model.clone()).unwrap();
+        prop_assert_eq!(tree.root(), rebuilt.root());
+        prop_assert_eq!(tree.entries().map(|(key, value)| (key.to_vec(), value)).collect::<BTreeMap<_, _>>(), model);
+        prop_assert_eq!(snapshot.root(), before);
+    }
     #[test]
     fn mutations_match_sorted_rebuild(operations in collection::vec((any::<[u8; 4]>(), proptest::option::of(any::<[u8; 32]>())), 0..100)) {
         let mut tree = tree();

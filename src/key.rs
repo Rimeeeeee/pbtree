@@ -40,9 +40,13 @@ pub fn account_hash<H: TreeHasher>(address: Address) -> B256 {
 
 /// Key of an account header field.
 pub fn header_key<H: TreeHasher>(address: Address, sub_index: u8) -> [u8; ACCOUNT_KEY_LENGTH] {
+    header_key_from_hash(account_hash::<H>(address), sub_index)
+}
+
+pub(crate) fn header_key_from_hash(position: B256, sub_index: u8) -> [u8; ACCOUNT_KEY_LENGTH] {
     let mut key = [0; ACCOUNT_KEY_LENGTH];
     key[0] = ACCOUNT_ZONE;
-    key[1..33].copy_from_slice(account_hash::<H>(address).as_slice());
+    key[1..33].copy_from_slice(position.as_slice());
     key[33] = sub_index;
     key
 }

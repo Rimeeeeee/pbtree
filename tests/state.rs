@@ -1,10 +1,47 @@
 //! Ethereum state lifecycle and shared-code tests.
 
 use alloy_primitives::{Address, B256, U256, keccak256};
-use pbt::{AccountData, Blake3Hasher, StateError, StateTree, key};
+use pbt::{AccountData, Blake3Hasher, StateError, StateTree, StateUpdate, key};
 
 fn account(code: Vec<u8>) -> AccountData {
     AccountData { nonce: 1, balance: U256::from(5), code: code.into() }
+}
+
+#[test]
+fn state_batches_match_serial_transitions_and_reject_atomically() {
+    let address = Address::repeat_byte(1);
+    let mut batched = StateTree::<Blake3Hasher>::new();
+    let mut serial = StateTree::<Blake3Hasher>::new();
+    let mut updates =
+        vec![StateUpdate::Account { address, account: Some(account(vec![0x7f; 95])) }];
+    serial.set_account(address, account(vec![0x7f; 95])).unwrap();
+    for slot in 0..256 {
+        let slot = U256::from(slot);
+        let value = B256::from(slot + U256::from(1));
+        updates.push(StateUpdate::Storage { address, slot, value });
+        serial.set_storage(address, slot, value).unwrap();
+    }
+    updates.push(StateUpdate::ClearStorage { address });
+    serial.clear_storage(address);
+    updates.push(StateUpdate::Storage { address, slot: U256::MAX, value: B256::repeat_byte(5) });
+    serial.set_storage(address, U256::MAX, B256::repeat_byte(5)).unwrap();
+    batched.apply_batch(updates).unwrap();
+    assert_eq!(batched.root(), serial.root());
+    assert_eq!(
+        batched.tree().entries().collect::<Vec<_>>(),
+        serial.tree().entries().collect::<Vec<_>>()
+    );
+    let snapshot = batched.clone();
+    assert!(
+        batched
+            .apply_batch([
+                StateUpdate::Account { address, account: None },
+                StateUpdate::Storage { address, slot: U256::ZERO, value: B256::repeat_byte(1) },
+            ])
+            .is_err()
+    );
+    assert_eq!(batched.root(), snapshot.root());
+    assert_eq!(batched.account(address), snapshot.account(address));
 }
 
 #[test]

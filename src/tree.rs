@@ -1,6 +1,7 @@
 use crate::{
     Blake3Hasher, TreeHasher,
-    hash::{branch_hash, leaf_hash},
+    hash::{leaf_hash, packed_branch_hash},
+    prefix::Prefix,
 };
 use alloy_primitives::B256;
 use std::{fmt, marker::PhantomData, sync::Arc};
@@ -84,7 +85,7 @@ impl<H: TreeHasher> BinaryTree<H> {
                     return (stored.as_ref() == key).then_some(*value);
                 }
                 Node::Branch { prefix, left, right, .. } => {
-                    if !matches_prefix(key, depth, prefix) {
+                    if !prefix.matches(key, depth) {
                         return None;
                     }
                     depth += prefix.len();
@@ -123,25 +124,75 @@ impl<H: TreeHasher> BinaryTree<H> {
         previous
     }
 
+    /// Atomically applies final leaf values, with `None` deleting a key.
+    ///
+    /// Repeated keys use their last update. Dense batches rebuild sorted leaves
+    /// once; small batches retain incremental path copying. Prefix validation is
+    /// applied to the final set, so a batch can replace a key with its descendants.
+    pub fn apply_updates(
+        &mut self,
+        updates: impl IntoIterator<Item = (Vec<u8>, Option<B256>)>,
+    ) -> Result<(), TreeError> {
+        let updates: std::collections::BTreeMap<_, _> = updates.into_iter().collect();
+        for key in updates.keys() {
+            validate_key(key)?;
+        }
+        if updates.is_empty() {
+            return Ok(());
+        }
+        if self.is_empty() || (updates.len() >= 64 && updates.len().saturating_mul(8) >= self.len) {
+            let mut entries: std::collections::BTreeMap<_, _> =
+                self.entries().map(|(key, value)| (key.to_vec(), value)).collect();
+            for (key, value) in updates {
+                if let Some(value) = value {
+                    entries.insert(key, value);
+                } else {
+                    entries.remove(&key);
+                }
+            }
+            *self = Self::from_sorted_entries(entries)?;
+        } else {
+            let mut next = self.clone();
+            for (key, value) in &updates {
+                if value.is_none() {
+                    next.remove(key);
+                }
+            }
+            for (key, value) in updates {
+                if let Some(value) = value {
+                    next.insert(key, value)?;
+                }
+            }
+            *self = next;
+        }
+        Ok(())
+    }
+
     /// Builds a tree from strictly ascending, unique, prefix-free keys.
     pub fn from_sorted_entries(
         entries: impl IntoIterator<Item = (Vec<u8>, B256)>,
     ) -> Result<Self, TreeError> {
         let entries: Vec<_> = entries.into_iter().collect();
-        for (index, (key, _)) in entries.iter().enumerate() {
-            validate_key(key)?;
-            if index > 0 {
-                let previous = &entries[index - 1].0;
-                if previous >= key {
-                    return Err(TreeError::UnsortedKeys);
-                }
-                if key.starts_with(previous) {
-                    return Err(TreeError::PrefixConflict);
-                }
-            }
-        }
+        validate_entries(&entries)?;
         Ok(Self {
             root: (!entries.is_empty()).then(|| build::<H>(&entries, 0)),
+            len: entries.len(),
+            hasher: PhantomData,
+        })
+    }
+
+    /// Builds independent sorted subtrees in parallel, producing identical roots.
+    /// Available only with the opt-in `experimental` feature. Small inputs use
+    /// the serial builder; parallel recursion is bounded independently of key depth.
+    #[cfg(feature = "experimental")]
+    pub fn from_sorted_entries_parallel(
+        entries: impl IntoIterator<Item = (Vec<u8>, B256)>,
+    ) -> Result<Self, TreeError> {
+        let entries: Vec<_> = entries.into_iter().collect();
+        validate_entries(&entries)?;
+        let budget = rayon::current_num_threads().next_power_of_two().trailing_zeros() as usize;
+        Ok(Self {
+            root: (!entries.is_empty()).then(|| build_parallel::<H>(&entries, 0, budget)),
             len: entries.len(),
             hasher: PhantomData,
         })
@@ -165,6 +216,22 @@ impl<H: TreeHasher> BinaryTree<H> {
     }
 }
 
+pub(crate) fn validate_entries(entries: &[(Vec<u8>, B256)]) -> Result<(), TreeError> {
+    for (index, (key, _)) in entries.iter().enumerate() {
+        validate_key(key)?;
+        if index > 0 {
+            let previous = &entries[index - 1].0;
+            if previous >= key {
+                return Err(TreeError::UnsortedKeys);
+            }
+            if key.starts_with(previous) {
+                return Err(TreeError::PrefixConflict);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Maximum generic key length allowed by the two-byte branch-prefix bit count.
 pub const MAX_KEY_LENGTH: usize = 8192;
 
@@ -185,7 +252,7 @@ pub enum TreeError {
 #[derive(Debug)]
 pub(crate) enum Node {
     Leaf { key: Box<[u8]>, value: B256, hash: B256 },
-    Branch { prefix: Vec<bool>, left: Arc<Self>, right: Arc<Self>, hash: B256 },
+    Branch { prefix: Prefix, left: Arc<Self>, right: Arc<Self>, hash: B256 },
 }
 
 impl Node {
@@ -200,8 +267,8 @@ impl Node {
         Arc::new(Self::Leaf { key, value, hash })
     }
 
-    fn branch<H: TreeHasher>(prefix: Vec<bool>, left: Arc<Self>, right: Arc<Self>) -> Arc<Self> {
-        let hash = branch_hash::<H>(&prefix, left.hash(), right.hash());
+    fn branch<H: TreeHasher>(prefix: Prefix, left: Arc<Self>, right: Arc<Self>) -> Arc<Self> {
+        let hash = packed_branch_hash::<H>(&prefix, left.hash(), right.hash());
         Arc::new(Self::Branch { prefix, left, right, hash })
     }
 }
@@ -233,13 +300,16 @@ fn insert<H: TreeHasher>(
         match node.as_ref() {
             Node::Leaf { key: stored, value: previous, .. } => {
                 if stored.as_ref() == key {
+                    if *previous == value {
+                        return Ok((root.clone(), Some(*previous)));
+                    }
                     break (Node::leaf::<H>(key.into(), value), Some(*previous));
                 }
                 let limit = key.len().min(stored.len()) * 8;
                 let split = (depth..limit)
                     .find(|i| bit(key, *i) != bit(stored, *i))
                     .ok_or(TreeError::PrefixConflict)?;
-                let prefix = (depth..split).map(|i| bit(key, i).unwrap()).collect();
+                let prefix = Prefix::new((depth..split).map(|i| bit(key, i).unwrap()));
                 let leaf = Node::leaf::<H>(key.into(), value);
                 let (left, right) = if bit(key, split).unwrap() {
                     (node.clone(), leaf)
@@ -249,21 +319,14 @@ fn insert<H: TreeHasher>(
                 break (Node::branch::<H>(prefix, left, right), None);
             }
             Node::Branch { prefix, left, right, .. } => {
-                let matched = prefix
-                    .iter()
-                    .enumerate()
-                    .take_while(|(i, b)| bit(key, depth + i) == Some(**b))
-                    .count();
+                let matched = prefix.common_prefix(key, depth);
                 let direction = bit(key, depth + matched).ok_or(TreeError::PrefixConflict)?;
                 if matched < prefix.len() {
-                    let survivor = Node::branch::<H>(
-                        prefix[matched + 1..].to_vec(),
-                        left.clone(),
-                        right.clone(),
-                    );
+                    let survivor =
+                        Node::branch::<H>(prefix.suffix(matched + 1), left.clone(), right.clone());
                     let leaf = Node::leaf::<H>(key.into(), value);
                     let (left, right) = if direction { (survivor, leaf) } else { (leaf, survivor) };
-                    break (Node::branch::<H>(prefix[..matched].to_vec(), left, right), None);
+                    break (Node::branch::<H>(prefix.prefix(matched), left, right), None);
                 }
                 path.push((prefix, if direction { left } else { right }, direction));
                 node = if direction { right } else { left };
@@ -292,7 +355,7 @@ fn remove<H: TreeHasher>(root: &Arc<Node>, key: &[u8]) -> (Option<Arc<Node>>, Op
                 break *value;
             }
             Node::Branch { prefix, left, right, .. } => {
-                if !matches_prefix(key, depth, prefix) {
+                if !prefix.matches(key, depth) {
                     return (Some(root.clone()), None);
                 }
                 let Some(direction) = bit(key, depth + prefix.len()) else {
@@ -314,9 +377,7 @@ fn remove<H: TreeHasher>(root: &Arc<Node>, key: &[u8]) -> (Option<Arc<Node>>, Op
             match sibling.as_ref() {
                 Node::Leaf { .. } => sibling.clone(),
                 Node::Branch { prefix: child_prefix, left, right, .. } => {
-                    let mut merged = prefix.clone();
-                    merged.push(!direction);
-                    merged.extend(child_prefix);
+                    let merged = prefix.concat(!direction, child_prefix);
                     Node::branch::<H>(merged, left.clone(), right.clone())
                 }
             }
@@ -328,7 +389,7 @@ fn remove<H: TreeHasher>(root: &Arc<Node>, key: &[u8]) -> (Option<Arc<Node>>, Op
 fn build<H: TreeHasher>(entries: &[(Vec<u8>, B256)], depth: usize) -> Arc<Node> {
     enum Task<'a> {
         Build(&'a [(Vec<u8>, B256)], usize),
-        Branch(Vec<bool>),
+        Branch(Prefix),
     }
     let mut tasks = vec![Task::Build(entries, depth)];
     let mut nodes = Vec::new();
@@ -348,7 +409,7 @@ fn build<H: TreeHasher>(entries: &[(Vec<u8>, B256)], depth: usize) -> Arc<Node> 
                     .find(|i| bit(first, *i) != bit(last, *i))
                     .expect("validated prefix-free keys");
                 let middle = entries.partition_point(|(key, _)| !bit(key, split).unwrap());
-                let prefix = (depth..split).map(|i| bit(first, i).unwrap()).collect();
+                let prefix = Prefix::new((depth..split).map(|i| bit(first, i).unwrap()));
                 tasks.push(Task::Branch(prefix));
                 tasks.push(Task::Build(&entries[middle..], split + 1));
                 tasks.push(Task::Build(&entries[..middle], split + 1));
@@ -361,4 +422,27 @@ fn build<H: TreeHasher>(entries: &[(Vec<u8>, B256)], depth: usize) -> Arc<Node> 
         }
     }
     nodes.pop().unwrap()
+}
+
+#[cfg(feature = "experimental")]
+fn build_parallel<H: TreeHasher>(
+    entries: &[(Vec<u8>, B256)],
+    depth: usize,
+    budget: usize,
+) -> Arc<Node> {
+    if entries.len() < 4096 || budget == 0 {
+        return build::<H>(entries, depth);
+    }
+    let first = &entries[0].0;
+    let last = &entries[entries.len() - 1].0;
+    let split = (depth..first.len().min(last.len()) * 8)
+        .find(|index| bit(first, *index) != bit(last, *index))
+        .expect("validated prefix-free keys");
+    let middle = entries.partition_point(|(key, _)| !bit(key, split).unwrap());
+    let prefix = Prefix::new((depth..split).map(|index| bit(first, index).unwrap()));
+    let (left, right) = rayon::join(
+        || build_parallel::<H>(&entries[..middle], split + 1, budget - 1),
+        || build_parallel::<H>(&entries[middle..], split + 1, budget - 1),
+    );
+    Node::branch::<H>(prefix, left, right)
 }

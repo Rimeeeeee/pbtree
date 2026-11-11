@@ -12,6 +12,7 @@ alloy-primitives = { version = "1.6.1", default-features = false, features = ["s
 blake3 = "1.8"
 imbl = "7"
 thiserror = { version = "2.0.20", default-features = false, features = ["std"] }
+rayon = { version = "1.12", optional = true }
 
 # migration
 alloy-trie = { version = "0.9.8", default-features = false, features = ["std", "ethereum"], optional = true }
@@ -33,6 +34,7 @@ default = []
 migration = ["dep:alloy-trie"]
 bal = ["dep:alloy-eip7928"]
 persistence = ["migration", "dep:rocksdb"]
+experimental = ["dep:rayon"]
 
 [lints.rust]
 missing_docs = "warn"

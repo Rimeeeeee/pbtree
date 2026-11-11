@@ -1788,6 +1788,7 @@ dependencies = [
  "criterion",
  "imbl",
  "proptest",
+ "rayon",
  "rocksdb",
  "serde_json",
  "tempfile",

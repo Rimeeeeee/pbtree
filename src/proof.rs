@@ -133,16 +133,16 @@ impl<H: TreeHasher> BinaryTree<H> {
                 }
                 Node::Branch { prefix, left, right, .. } => {
                     let direction = bit(key, depth + prefix.len());
-                    if !matches_prefix(key, depth, prefix) || direction.is_none() {
+                    if !prefix.matches(key, depth) || direction.is_none() {
                         break ProofTerminal::Branch {
-                            prefix: prefix.clone(),
+                            prefix: prefix.to_vec(),
                             left: left.hash(),
                             right: right.hash(),
                         };
                     }
                     let direction = direction.unwrap();
                     steps.push(ProofStep {
-                        prefix: prefix.clone(),
+                        prefix: prefix.to_vec(),
                         right: direction,
                         sibling: if direction { left.hash() } else { right.hash() },
                     });
