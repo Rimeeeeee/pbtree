@@ -1,10 +1,10 @@
 //! Differential checks for opt-in arena snapshots and parallel construction.
-#![cfg(feature = "experimental")]
+#![cfg(all(feature = "parallel", feature = "arena"))]
 
 use alloy_primitives::B256;
 use pbt::{
     BinaryTree, Blake3Hasher, TreeError,
-    experimental::{ArenaError, ArenaTree},
+    arena::{ArenaError, ArenaTree},
 };
 use proptest::{collection, prelude::*};
 use std::collections::BTreeMap;

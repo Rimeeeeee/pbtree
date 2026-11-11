@@ -111,9 +111,9 @@ jobs:
             target: artifact_decode
             flags: ""
             max_len: 65536
-          - name: tree_ops-experimental
+          - name: tree_ops-arena
             target: tree_ops
-            flags: --features experimental
+            flags: --features arena
             max_len: 16384
     steps:
       - name: Secure runner

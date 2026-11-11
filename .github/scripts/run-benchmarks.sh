@@ -25,9 +25,10 @@ print("\n".join(target["name"] for target in package["targets"] if "bench" in ta
     arguments=(--locked --all-features)
     for suite in "${suites[@]}"; do arguments+=(--bench "$suite"); done
     CRITERION_HOME="$estimates_dir" cargo bench "${arguments[@]}" -- \
-      --sample-size 10 --warm-up-time 0.5 --measurement-time 1 --noplot
+      --sample-size 50 --warm-up-time 1 --measurement-time 5 --noplot
     python3 "$collector" --root "$source_dir" --criterion "$estimates_dir" \
-      --commit "$sha" --output "$output_dir/$label.json"
+      --commit "$sha" --output "$output_dir/$label.json" \
+      --profile 'release; all features; requested 50 samples; actual samples recorded per case; 1s warm-up; 5s target measurement; 95% confidence intervals'
   )
 }
 

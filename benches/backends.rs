@@ -1,9 +1,9 @@
-//! Same-key workloads comparing explicit experimental APIs with the default tree.
+//! Identical-input workloads for the default tree, parallel builder, and arena.
 //! Arena history is compacted outside timed mutation regions to bound retained nodes.
 
 use alloy_primitives::{B256, U256, keccak256};
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
-use pbt::{BinaryTree, Blake3Hasher, experimental::ArenaTree};
+use pbt::{BinaryTree, Blake3Hasher, arena::ArenaTree};
 use std::{
     hint::black_box,
     time::{Duration, Instant},
@@ -23,9 +23,8 @@ fn entries(size: usize) -> Vec<(Vec<u8>, B256)> {
 }
 
 fn construction(c: &mut Criterion) {
-    let mut group = c.benchmark_group("experimental/build");
-    group.sample_size(10);
-    for size in [1024, 16384, 65536] {
+    let mut group = c.benchmark_group("backends/build");
+    for size in [16_384, 65_536, 262_144] {
         let entries = entries(size);
         let root = Tree::from_sorted_entries(entries.clone()).unwrap().root();
         assert_eq!(Tree::from_sorted_entries_parallel(entries.clone()).unwrap().root(), root);
@@ -56,9 +55,8 @@ fn construction(c: &mut Criterion) {
 }
 
 fn operations(c: &mut Criterion) {
-    let mut group = c.benchmark_group("experimental/operations");
-    group.sample_size(10);
-    for size in [1024, 16384] {
+    let mut group = c.benchmark_group("backends/operations");
+    for size in [16_384, 262_144] {
         let entries = entries(size);
         let key = entries[size / 2].0.clone();
         let tree = Tree::from_sorted_entries(entries.clone()).unwrap();

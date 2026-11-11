@@ -13,8 +13,8 @@ primitives for [EIP-8347](https://eips.ethereum.org/EIPS/eip-8347).
 - `bal`: authenticated EIP-7928 post-value replay and bounded discardable forks.
 - `persistence`: content-addressed RocksDB trie nodes, synced incremental writes,
   verified cold restoration, and registered-root garbage collection.
-- `experimental`: explicit parallel bulk construction and an append-only arena
-  backend for measuring allocation and cache tradeoffs. Disabled by default.
+- `parallel`: Rayon bulk construction of sorted trees. Disabled by default.
+- `arena`: append-only tree storage with compact node indices. Disabled by default.
 
 Reth-specific execution bundles, retained-state cursors, finality/header checks,
 atomic checkpoint files, node startup, staged backfill and RPC remain in Reth.
@@ -57,11 +57,11 @@ cargo clippy -p pbt --all-features --all-targets -- -D warnings
 Run the tree and state benchmarks with `cargo bench`. Enable the optional
 migration, BAL replay, and persistence benchmarks with `cargo bench --all-features`.
 
-With `experimental` enabled, call
+With `parallel` enabled, call
 `BinaryTree::from_sorted_entries_parallel` to build sorted leaves using Rayon.
 It returns the usual `BinaryTree` with the same root and proof format. Small
 inputs use the serial builder; callers can select a Rayon thread pool.
-`experimental::ArenaTree` is a separate API: snapshots share append-only storage,
+With `arena` enabled, `arena::ArenaTree` provides a separate API: snapshots share append-only storage,
 writers share a lock, and historical nodes remain allocated until the arena is
 released. `compact()` detaches one snapshot into fresh storage. Enabling the
 feature keeps the existing `BinaryTree`, `StateTree`, and database APIs in use.
@@ -70,7 +70,7 @@ Enable the feature in a consuming crate:
 
 ```toml
 [dependencies]
-pbt = { git = "https://github.com/Rimeeeeee/pbtree", features = ["experimental"] }
+pbt = { git = "https://github.com/Rimeeeeee/pbtree", features = ["parallel"] }
 alloy-primitives = "1.6.1"
 ```
 
@@ -88,8 +88,8 @@ assert_eq!(tree.len(), 16_384);
 ```
 
 ```sh
-cargo test --features experimental
-cargo bench --features experimental --bench experimental
+cargo test --features parallel,arena
+cargo bench --features parallel,arena --bench backends
 ```
 
 Coverage-guided tree and artifact fuzzing runs in CI. Local commands and input

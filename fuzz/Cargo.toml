@@ -15,7 +15,7 @@ pbt = { path = "..", features = ["migration"] }
 [workspace]
 
 [features]
-experimental = ["pbt/experimental"]
+arena = ["pbt/arena"]
 
 [[bin]]
 name = "tree_ops"

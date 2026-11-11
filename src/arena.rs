@@ -53,7 +53,7 @@ impl<H> fmt::Debug for ArenaTree<H> {
     }
 }
 
-/// Invalid input or an unavailable experimental arena.
+/// Invalid input or an unavailable arena.
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum ArenaError {
     /// The same key validation errors as the default tree.

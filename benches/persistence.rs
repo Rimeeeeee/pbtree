@@ -13,7 +13,7 @@ use std::{
 };
 
 type State = StateTree<Blake3Hasher>;
-const SIZES: [usize; 2] = [256, 4_096];
+const SIZES: [usize; 3] = [256, 4_096, 16_384];
 
 fn address(index: usize) -> Address {
     let mut bytes = [0; 20];
@@ -59,7 +59,6 @@ impl Fixture {
 fn saves(c: &mut Criterion) {
     let limits = DecodeLimits::default();
     let mut group = c.benchmark_group("persistence/save");
-    group.sample_size(10);
     group.throughput(Throughput::Elements(1));
     for size in SIZES {
         let mut state = populated_state(size);
@@ -101,7 +100,6 @@ fn saves(c: &mut Criterion) {
 fn loads(c: &mut Criterion) {
     let limits = DecodeLimits::default();
     let mut group = c.benchmark_group("persistence/load");
-    group.sample_size(10);
     for size in SIZES {
         let state = populated_state(size);
         let root = state.root();

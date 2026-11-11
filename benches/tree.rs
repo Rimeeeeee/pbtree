@@ -6,7 +6,7 @@ use pbt::{BinaryTree, Blake3Hasher, key};
 use std::hint::black_box;
 
 type Tree = BinaryTree<Blake3Hasher>;
-const SIZES: [usize; 2] = [1_024, 16_384];
+const SIZES: [usize; 3] = [1_024, 16_384, 262_144];
 
 fn tree_key(index: usize) -> Vec<u8> {
     let mut address = [0; 20];

@@ -183,9 +183,9 @@ impl<H: TreeHasher> BinaryTree<H> {
     }
 
     /// Builds independent sorted subtrees in parallel, producing identical roots.
-    /// Available only with the opt-in `experimental` feature. Small inputs use
+    /// Available only with the opt-in `parallel` feature. Small inputs use
     /// the serial builder; parallel recursion is bounded independently of key depth.
-    #[cfg(feature = "experimental")]
+    #[cfg(feature = "parallel")]
     pub fn from_sorted_entries_parallel(
         entries: impl IntoIterator<Item = (Vec<u8>, B256)>,
     ) -> Result<Self, TreeError> {
@@ -434,7 +434,7 @@ fn build<H: TreeHasher>(entries: &[(Vec<u8>, B256)], depth: usize) -> Arc<Node> 
     nodes.pop().unwrap()
 }
 
-#[cfg(feature = "experimental")]
+#[cfg(feature = "parallel")]
 fn build_parallel<H: TreeHasher>(
     entries: &[(Vec<u8>, B256)],
     depth: usize,

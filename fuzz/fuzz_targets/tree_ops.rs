@@ -73,8 +73,8 @@ fn check_proof(tree: &Tree, model: &Model, key: &[u8], selector: usize) {
 fuzz_target!(|data: &[u8]| {
     let mut tree = Tree::new();
     let mut model = Model::new();
-    #[cfg(feature = "experimental")]
-    let mut arena = pbt::experimental::ArenaTree::<Blake3Hasher>::new();
+    #[cfg(feature = "arena")]
+    let mut arena = pbt::arena::ArenaTree::<Blake3Hasher>::new();
     for record in data.chunks(42).take(128) {
         let control = record[0];
         let key_len = 1 + usize::from(record.get(1).copied().unwrap_or(0)) % 8;
@@ -85,7 +85,7 @@ fuzz_target!(|data: &[u8]| {
             key = model.keys().nth(index).unwrap().clone();
         }
         let snapshot = tree.clone();
-        #[cfg(feature = "experimental")]
+        #[cfg(feature = "arena")]
         let arena_snapshot = arena.clone();
         let previous_root = tree.root();
         let previous_entries = model.clone();
@@ -99,28 +99,28 @@ fuzz_target!(|data: &[u8]| {
                 });
                 if conflict {
                     assert_eq!(tree.insert(key.clone(), value), Err(TreeError::PrefixConflict));
-                    #[cfg(feature = "experimental")]
+                    #[cfg(feature = "arena")]
                     assert!(matches!(
                         arena.insert(key.clone(), value),
-                        Err(pbt::experimental::ArenaError::Tree(TreeError::PrefixConflict))
+                        Err(pbt::arena::ArenaError::Tree(TreeError::PrefixConflict))
                     ));
                 } else {
                     let previous = model.insert(key.clone(), value);
                     assert_eq!(tree.insert(key.clone(), value).unwrap(), previous);
-                    #[cfg(feature = "experimental")]
+                    #[cfg(feature = "arena")]
                     assert_eq!(arena.insert(key.clone(), value).unwrap(), previous);
                 }
             }
             2 => {
                 let previous = model.remove(&key);
                 assert_eq!(tree.remove(&key), previous);
-                #[cfg(feature = "experimental")]
+                #[cfg(feature = "arena")]
                 assert_eq!(arena.remove(&key).unwrap(), previous);
             }
             _ => {}
         }
         assert_eq!(snapshot.root(), previous_root);
-        #[cfg(feature = "experimental")]
+        #[cfg(feature = "arena")]
         {
             if control & 0x80 != 0 {
                 arena.compact().unwrap();

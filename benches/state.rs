@@ -6,7 +6,7 @@ use pbt::{AccountData, Blake3Hasher, StateTree};
 use std::hint::black_box;
 
 type State = StateTree<Blake3Hasher>;
-const SIZES: [usize; 2] = [128, 2_048];
+const SIZES: [usize; 3] = [128, 2_048, 16_384];
 
 fn address(index: usize) -> Address {
     let mut bytes = [0; 20];

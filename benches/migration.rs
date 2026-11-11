@@ -36,8 +36,7 @@ fn populated_state(size: usize) -> State {
 
 fn artifacts(c: &mut Criterion) {
     let mut group = c.benchmark_group("migration/artifacts");
-    group.sample_size(10);
-    for size in [128, 2_048] {
+    for size in [128, 2_048, 16_384] {
         let state = populated_state(size);
         let encoded = Artifacts::from_state(&state).unwrap();
         let anchor = mpt_root(&state);

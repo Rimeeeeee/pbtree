@@ -22,7 +22,7 @@ fn address(index: usize) -> Address {
 
 fn replay_blocks(c: &mut Criterion) {
     let mut parent = State::new();
-    for index in 0..1_024 {
+    for index in 0..16_384 {
         parent
             .set_account(
                 address(index),
@@ -31,7 +31,7 @@ fn replay_blocks(c: &mut Criterion) {
             .unwrap();
     }
     let mut group = c.benchmark_group("replay/authenticated_bal");
-    for count in [1, 64, 256] {
+    for count in [1, 64, 256, 4_096] {
         let bal: Vec<_> = (0..count)
             .map(|index| {
                 let mut change = AccountChanges::new(address(index));
@@ -65,9 +65,8 @@ fn replay_blocks(c: &mut Criterion) {
 
 fn finality(c: &mut Criterion) {
     let mut group = c.benchmark_group("replay/finalize_linear_chain");
-    group.sample_size(10);
     let bal_hash = compute_block_access_list_hash(&[]);
-    for count in [128, 512, 1_024, 4_096] {
+    for count in [128, 512, 1_024, 4_096, 16_384] {
         let hashes: Vec<_> =
             (0..count).map(|index: usize| keccak256((index as u64).to_be_bytes())).collect();
         let mut chain = ReplayChain::<Blake3Hasher>::with_limit(
