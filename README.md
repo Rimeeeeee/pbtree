@@ -61,10 +61,11 @@ With `parallel` enabled, call
 `BinaryTree::from_sorted_entries_parallel` to build sorted leaves using Rayon.
 It returns the usual `BinaryTree` with the same root and proof format. Small
 inputs use the serial builder; callers can select a Rayon thread pool.
-With `arena` enabled, `arena::ArenaTree` provides a separate API: snapshots share append-only storage,
-writers share a lock, and historical nodes remain allocated until the arena is
-released. `compact()` detaches one snapshot into fresh storage. Enabling the
-feature keeps the existing `BinaryTree`, `StateTree`, and database APIs in use.
+With `arena` enabled, `pbt::arena::ArenaTree` provides a separate API: snapshots
+share append-only storage, writers share a lock, and historical nodes remain
+allocated until the arena is released. `compact()` detaches one snapshot into
+fresh storage. Enabling either feature keeps the existing `BinaryTree`, `StateTree`,
+and database APIs in use.
 
 Enable the feature in a consuming crate:
 
@@ -103,63 +104,67 @@ This extraction does not establish mainnet-scale performance or production readi
 
 ## Benchmarks
 
-Measured on 2026-11-11, comparing `4a83606` with `9af52b8` on the same AMD
-Ryzen 9 8940HX under Ubuntu WSL2, using
-`rustc 1.97.0-nightly (d3cd04068 2026-05-16)`, release mode, and all features.
-These are mean times with 10 samples, 0.5 s warm-up, and a 1 s target measurement.
-[All 53 baseline and 70 selected results, with 95% confidence intervals](benches/results/optimizations-2026-11-11.json)
-include the full environment and source commits. Lower time is better; small
-differences can be noise. Percentage changes use the unrounded mean times.
+Measured on 2026-11-11 at `a3484da`. Mean times in release mode,
+using BLAKE3 and all features. Each case uses **50 samples**, a 1 s warm-up,
+and a 5 s target measurement. [All 93 results and 95% confidence intervals](benches/results/current-2026-11-11.json).
 
-| Operation | Fixture | Before | After | Change |
-|---|---|---:|---:|---:|
-| Sorted tree build | 16,384 leaves | 11.0 ms | 10.6 ms | -3.4% |
-| Incremental tree build | 16,384 leaves | 89.5 ms | 74.2 ms | -17.2% |
-| Leaf replacement | 16,384 leaves | 4.47 us | 3.89 us | -12.9% |
-| Leaf removal | 16,384 leaves | 4.14 us | 3.70 us | -10.7% |
-| Membership proof generation | 16,384 leaves | 304 ns | 273 ns | -10.3% |
-| Membership proof verification | 16,384 leaves | 4.72 us | 3.26 us | -30.8% |
-| Account balance update | 2,048 accounts | 16.9 us | 6.08 us | -64.1% |
-| Overflow storage replacement | 2,048 accounts | 7.24 us | 5.94 us | -18.0% |
-| Artifact encoding | 2,048 accounts | 72.6 ms | 8.83 ms | -87.8% |
-| MPT anchor verification | 2,048 accounts | 206 ms | 71.2 ms | -65.5% |
-| PBT checkpoint restoration | 2,048 accounts | 174 ms | 53.9 ms | -69.1% |
-| Authenticated BAL replay | 64 changed accounts | 2.70 ms | 1.57 ms | -41.9% |
-| Authenticated BAL replay | 256 changed accounts | 11.7 ms | 4.94 ms | -57.7% |
-| Midpoint finalization | 4,096 layers | 1.82 ms | 1.80 ms | -1.2% |
-| Synced save, one account changed | 4,096 accounts | 2.93 ms | 2.15 ms | -26.7% |
-| Synced save, unchanged state | 4,096 accounts | 2.18 ms | 1.77 ms | -19.0% |
-| Verified state reconstruction, warm DB cache | 4,096 accounts | 546 ms | 200 ms | -63.3% |
+- CPU: **AMD Ryzen 9 8940HX, 16 cores / 32 threads**.
+- OS: Ubuntu 24.04.5 LTS (WSL2), Linux 6.18.58.1.
+- Memory available to the benchmark environment: 15.2 GiB.
+- Compiler: `rustc 1.97.0-nightly (d3cd04068 2026-05-16)`.
+- Parallel builder: 32 Rayon worker threads.
 
-Fixture construction is excluded. Persistence saves include synchronous WAL
-writes; reconstruction starts with a fresh in-memory state while RocksDB/OS
-caches may be warm. Benchmark source and fixture details are in `benches/`.
+### Default library
 
-The selected changes cache derived hashes, avoid unchanged writes, batch dense
-leaf updates, and batch verified database reads. Sparse updates retain incremental
-path copying. Public method signatures, commitment/proof formats, canonical
-artifacts, and the native database format are preserved.
+Tree cases use Ethereum header keys. State fixtures have four storage slots per account.
 
-The optional parallel builder measured 8.30 ms versus 42.0 ms for serial
-construction at 65,536 leaves with the default Rayon pool. At 16,384
-leaves, arena reads measured 114 ns versus 81.6 ns, and replacements measured
-3.98 us versus 3.73 us for the default tree. Arena replacement timings exclude
-periodic compaction; it retains append history between compactions. The arena
-therefore remains an explicit experimental backend.
+| Operation | Fixture | Mean time |
+|---|---|---:|
+| Sorted tree build | 262,144 leaves | 180 ms |
+| Incremental tree build | 262,144 leaves | 2.05 s |
+| Leaf replacement | 262,144 leaves | 4.93 us |
+| Leaf removal | 262,144 leaves | 4.69 us |
+| Membership proof generation | 262,144 leaves | 322 ns |
+| Membership proof verification | 262,144 leaves | 4.34 us |
+| Absence proof generation | 262,144 leaves | 453 ns |
+| Absence proof verification | 262,144 leaves | 4.86 us |
+| Account balance update | 16,384 accounts | 8 us |
+| Inline storage replacement | 16,384 accounts | 7.72 us |
+| Overflow storage replacement | 16,384 accounts | 7.31 us |
+| Overflow storage deletion | 16,384 accounts | 6.06 us |
+| Account removal, shared code | 16,384 accounts | 37.1 us |
+| Artifact encoding | 16,384 accounts | 106 ms |
+| MPT anchor verification | 16,384 accounts | 781 ms |
+| PBT checkpoint restoration | 16,384 accounts | 598 ms |
+| Authenticated BAL replay | 64 changed / 16,384 parent accounts | 2.04 ms |
+| Authenticated BAL replay | 256 changed / 16,384 parent accounts | 8.48 ms |
+| Authenticated BAL replay | 4,096 changed / 16,384 parent accounts | 102 ms |
+| Finalization, same anchor | 16,384 layers | 354 ns |
+| Midpoint finalization | 16,384 layers | 9 ms |
+| Tip finalization | 16,384 layers | 6.4 ms |
+| Synced save, one account changed | 16,384 accounts | 3.11 ms |
+| Synced save, unchanged state | 16,384 accounts | 2.26 ms |
+| Verified state reconstruction, warm DB cache | 16,384 accounts | 1.11 s |
 
-The results also include two interleaved base/head repeats of membership proof
-generation and 64/256-account replay (20 samples), plus 1,024-layer midpoint
-finalization (10 samples), each with a 2 s target measurement.
-The earlier 64-account replay regression was removed by keeping sparse batches
-incremental. The original proof-generation implementation is retained; its
-timings varied across repeats. A borderline 5% finalization regression in the
-full run did not consistently reproduce in these repeats. The
-[earlier 53-case snapshot](benches/results/local-2026-11-11.json) is retained
-separately.
+### Parallel builder and arena
 
-Every CI run measures the change and its base on the same runner. Results update
-one PR comment, or a commit comment for pushes to `main`. Regressions and
-improvements are flagged above 5% when the 95% confidence intervals do not overlap;
-these flags are advisory. Changed harnesses/toolchains and added or removed cases
-are reported separately. Full results are retained as the `benchmark-results`
-workflow artifact for 30 days. Local snapshot times are independent of CI hardware.
+These cases use identical sorted 32-byte keys for every backend.
+
+| Sorted build | Default tree | `parallel` | `arena` |
+|---|---:|---:|---:|
+| 16,384 leaves | 10.7 ms | 4.26 ms | 10.7 ms |
+| 65,536 leaves | 43.1 ms | 8.83 ms | 42.3 ms |
+| 262,144 leaves | 181 ms | 23.2 ms | 177 ms |
+
+| Operation | Leaves | Default tree | `arena` |
+|---|---:|---:|---:|
+| Lookup | 16,384 | 87.1 ns | 123 ns |
+| Replacement | 16,384 | 4.03 us | 4.23 us |
+| Lookup | 262,144 | 148 ns | 192 ns |
+| Replacement | 262,144 | 6.01 us | 1.96 ms |
+
+Fixture setup is untimed. Point reads and writes target a fixed key/account.
+Persistence saves include synchronous WAL writes and exclude root removal and GC;
+state reconstruction uses a fresh in-memory state with potentially warm database
+and OS caches. Arena replacement timings exclude periodic compaction but include
+any node-vector growth on the next write.
