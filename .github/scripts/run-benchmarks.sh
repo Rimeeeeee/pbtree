@@ -15,8 +15,16 @@ measure() {
   estimates_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/pbt-criterion-$label.XXXXXX")"
   (
     cd "$source_dir"
-    CRITERION_HOME="$estimates_dir" cargo bench --locked --all-features \
-      --bench tree --bench state --bench migration --bench replay --bench persistence -- \
+    mapfile -t suites < <(cargo metadata --locked --all-features --no-deps --format-version 1 | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+package = next(package for package in data["packages"] if package["id"] in data["workspace_default_members"])
+print("\n".join(target["name"] for target in package["targets"] if "bench" in target["kind"]))
+')
+    if [[ "${#suites[@]}" == 0 ]]; then echo "No benchmark targets found" >&2; exit 1; fi
+    arguments=(--locked --all-features)
+    for suite in "${suites[@]}"; do arguments+=(--bench "$suite"); done
+    CRITERION_HOME="$estimates_dir" cargo bench "${arguments[@]}" -- \
       --sample-size 10 --warm-up-time 0.5 --measurement-time 1 --noplot
     python3 "$collector" --root "$source_dir" --criterion "$estimates_dir" \
       --commit "$sha" --output "$output_dir/$label.json"

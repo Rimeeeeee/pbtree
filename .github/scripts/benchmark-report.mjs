@@ -16,6 +16,7 @@ function validateRun(run) {
       throw new Error('Invalid or duplicate benchmark ID');
     }
     ids.add(row.id);
+    if (row.source_hash !== undefined && !/^[0-9a-f]{64}$/.test(row.source_hash)) throw new Error('Invalid benchmark source hash');
     for (const value of [row.low_ns, row.mean_ns, row.high_ns]) {
       if (!Number.isFinite(value) || value <= 0) throw new Error('Invalid benchmark estimate');
     }
@@ -36,14 +37,16 @@ export function renderReport(payload, { repository, headSha, runUrl }) {
   if (payload.head.commit !== headSha) throw new Error('Benchmark results belong to another commit');
   if (payload.base) validateRun(payload.base);
   const base = new Map((payload.base?.benchmarks ?? []).map(row => [row.id, row]));
-  const compatible = payload.base && payload.base.suite_hash === payload.head.suite_hash
-    && payload.base.toolchain === payload.head.toolchain;
+  const sameToolchain = payload.base && payload.base.toolchain === payload.head.toolchain;
+  let comparable = 0;
   let regressions = 0;
   let improvements = 0;
   const rows = payload.head.benchmarks.map(row => {
     const previous = base.get(row.id);
     let change = 'New';
-    if (previous && compatible) {
+    const sameHarness = previous && (previous.source_hash ?? payload.base.suite_hash) === (row.source_hash ?? payload.head.suite_hash);
+    if (previous && sameHarness && sameToolchain) {
+      comparable += 1;
       const delta = (row.mean_ns / previous.mean_ns - 1) * 100;
       const regression = delta > 5 && row.low_ns > previous.high_ns;
       const improvement = delta < -5 && row.high_ns < previous.low_ns;
@@ -58,7 +61,7 @@ export function renderReport(payload, { repository, headSha, runUrl }) {
     return `| \`${row.id}\` | ${previous ? duration(previous.mean_ns) : '—'} | ${duration(row.mean_ns)} | ${change} |`;
   });
   const removed = [...base.keys()].filter(id => !payload.head.benchmarks.some(row => row.id === id));
-  const summary = compatible
+  const summary = comparable > 0
     ? `**${regressions} potential regressions · ${improvements} improvements**`
     : payload.base ? '**Benchmark harness or toolchain changed; timing deltas are not classified.**' : '**Initial benchmark baseline.**';
   const baseRef = payload.base ? `[${payload.base.commit.slice(0, 7)}](https://github.com/${repository}/commit/${payload.base.commit})` : 'none';

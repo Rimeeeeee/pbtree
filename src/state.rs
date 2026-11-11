@@ -5,6 +5,8 @@ use crate::{
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use imbl::{OrdMap, ordmap::Entry};
 use std::collections::BTreeMap;
+#[cfg(feature = "persistence")]
+use std::sync::Arc;
 
 /// Ethereum state encoded into a single partitioned binary tree.
 ///
@@ -17,14 +19,19 @@ pub struct StateTree<H = Blake3Hasher> {
     accounts: OrdMap<Address, AccountData>,
     codes: OrdMap<B256, CodeReference>,
     storages: OrdMap<Address, OrdMap<Vec<u8>, (U256, B256)>>,
-    pending: Option<BTreeMap<Vec<u8>, Option<B256>>>,
+    // Keep ordinary snapshots small; only an active batch allocates this header.
+    #[allow(clippy::box_collection)]
+    pending: Option<Box<BTreeMap<Vec<u8>, Option<B256>>>>,
     #[cfg(feature = "persistence")]
+    metadata: Arc<PersistenceMetadata>,
+}
+
+#[cfg(feature = "persistence")]
+#[derive(Clone, Debug, Default)]
+struct PersistenceMetadata {
     addresses: OrdMap<B256, Address>,
-    #[cfg(feature = "persistence")]
     empty_accounts: usize,
-    #[cfg(feature = "persistence")]
     total_code_bytes: u128,
-    #[cfg(feature = "persistence")]
     code_sizes: OrdMap<usize, usize>,
 }
 
@@ -37,13 +44,7 @@ impl<H: TreeHasher> Default for StateTree<H> {
             storages: OrdMap::default(),
             pending: None,
             #[cfg(feature = "persistence")]
-            addresses: OrdMap::default(),
-            #[cfg(feature = "persistence")]
-            empty_accounts: 0,
-            #[cfg(feature = "persistence")]
-            total_code_bytes: 0,
-            #[cfg(feature = "persistence")]
-            code_sizes: OrdMap::default(),
+            metadata: Arc::default(),
         }
     }
 }
@@ -92,12 +93,12 @@ impl<H: TreeHasher> StateTree<H> {
 
     pub(crate) fn begin_batch(&mut self) {
         assert!(self.pending.is_none(), "batches cannot be nested");
-        self.pending = Some(BTreeMap::new());
+        self.pending = Some(Box::default());
     }
 
     pub(crate) fn finish_batch(&mut self) -> Result<(), StateError> {
         if let Some(updates) = self.pending.take() {
-            self.tree.apply_updates(updates)?;
+            self.tree.apply_updates(*updates)?;
         }
         Ok(())
     }
@@ -143,9 +144,13 @@ impl<H: TreeHasher> StateTree<H> {
         }
         #[cfg(feature = "persistence")]
         {
-            self.empty_accounts -=
-                usize::from(previous.as_ref().is_some_and(AccountData::is_empty));
-            self.empty_accounts += usize::from(account.is_empty());
+            let old_empty = previous.as_ref().is_some_and(AccountData::is_empty);
+            let new_empty = account.is_empty();
+            if old_empty != new_empty {
+                let metadata = Arc::make_mut(&mut self.metadata);
+                metadata.empty_accounts -= usize::from(old_empty);
+                metadata.empty_accounts += usize::from(new_empty);
+            }
         }
         let position = key::account_hash::<H>(address);
         let same_code = previous.as_ref().is_some_and(|previous| previous.code == account.code);
@@ -166,12 +171,14 @@ impl<H: TreeHasher> StateTree<H> {
                     #[cfg(feature = "persistence")]
                     {
                         let size = account.code.len();
-                        self.total_code_bytes += size as u128;
-                        *self.code_sizes.entry(size).or_default() += 1;
+                        let metadata = Arc::make_mut(&mut self.metadata);
+                        metadata.total_code_bytes += size as u128;
+                        *metadata.code_sizes.entry(size).or_default() += 1;
                     }
-                    for (index, chunk) in key::chunkify_code(&account.code).into_iter().enumerate()
-                    {
-                        self.write(key::code_key::<H>(hash, index as u64).to_vec(), chunk);
+                    let chunks = key::chunkify_code(&account.code);
+                    let keys = key::code_keys::<H>(hash, chunks.len());
+                    for (key, chunk) in keys.zip(chunks) {
+                        self.write(key.to_vec(), chunk);
                     }
                 }
             }
@@ -197,7 +204,9 @@ impl<H: TreeHasher> StateTree<H> {
         }
         self.accounts.insert(address, account);
         #[cfg(feature = "persistence")]
-        self.addresses.insert(position, address);
+        if previous.is_none() {
+            Arc::make_mut(&mut self.metadata).addresses.insert(position, address);
+        }
         Ok(())
     }
 
@@ -221,10 +230,10 @@ impl<H: TreeHasher> StateTree<H> {
         let account = self.accounts.remove(&address)?;
         #[cfg(feature = "persistence")]
         {
-            self.empty_accounts -= usize::from(account.is_empty());
+            let metadata = Arc::make_mut(&mut self.metadata);
+            metadata.empty_accounts -= usize::from(account.is_empty());
+            metadata.addresses.remove(&key::account_hash::<H>(address));
         }
-        #[cfg(feature = "persistence")]
-        self.addresses.remove(&key::account_hash::<H>(address));
         if let Some(hash) = account.contract_hash() {
             self.release_code(hash);
         }
@@ -301,15 +310,16 @@ impl<H: TreeHasher> StateTree<H> {
                 let size = entry.remove().code.len();
                 #[cfg(feature = "persistence")]
                 {
-                    self.total_code_bytes -= size as u128;
-                    let count = self.code_sizes.get_mut(&size).expect("code size is tracked");
+                    let metadata = Arc::make_mut(&mut self.metadata);
+                    metadata.total_code_bytes -= size as u128;
+                    let count = metadata.code_sizes.get_mut(&size).expect("code size is tracked");
                     *count -= 1;
                     if *count == 0 {
-                        self.code_sizes.remove(&size);
+                        metadata.code_sizes.remove(&size);
                     }
                 }
-                for index in 0..size.div_ceil(31) {
-                    self.remove_leaf(&key::code_key::<H>(hash, index as u64));
+                for key in key::code_keys::<H>(hash, size.div_ceil(31)) {
+                    self.remove_leaf(&key);
                 }
             }
         }
@@ -327,7 +337,7 @@ impl<H: TreeHasher> StateTree<H> {
 
     #[cfg(feature = "persistence")]
     pub(crate) fn address_preimage(&self, hash: B256) -> Option<Address> {
-        self.addresses.get(&hash).copied()
+        self.metadata.addresses.get(&hash).copied()
     }
 
     #[cfg(feature = "persistence")]
@@ -343,9 +353,9 @@ impl<H: TreeHasher> StateTree<H> {
     #[cfg(feature = "persistence")]
     pub(crate) fn validation_stats(&self) -> (usize, u128, usize) {
         (
-            self.empty_accounts,
-            self.total_code_bytes,
-            self.code_sizes.get_max().map_or(0, |(size, _)| *size),
+            self.metadata.empty_accounts,
+            self.metadata.total_code_bytes,
+            self.metadata.code_sizes.get_max().map_or(0, |(size, _)| *size),
         )
     }
 }

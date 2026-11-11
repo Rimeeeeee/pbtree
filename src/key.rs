@@ -76,6 +76,20 @@ pub fn code_key<H: TreeHasher>(code_hash: B256, chunk: u64) -> [u8; ACCOUNT_KEY_
     key
 }
 
+pub(crate) fn code_keys<H: TreeHasher>(
+    hash: B256,
+    chunks: usize,
+) -> impl ExactSizeIterator<Item = [u8; ACCOUNT_KEY_LENGTH]> {
+    let mut key = [0; ACCOUNT_KEY_LENGTH];
+    (0..chunks).map(move |index| {
+        if index % STEM_SUBTREE_WIDTH as usize == 0 {
+            key = code_key::<H>(hash, index as u64);
+        }
+        key[33] = index as u8;
+        key
+    })
+}
+
 /// Chunks bytecode into 31 code bytes plus a leading PUSH-continuation byte.
 ///
 /// Zero-valued chunks are retained here; the state writer removes them. PUSH data can span

@@ -7,6 +7,7 @@ cargo install cargo-fuzz --version 0.13.2 --locked
 mkdir -p fuzz/corpus/tree_ops fuzz/corpus/artifact_decode
 cargo +nightly fuzz run tree_ops fuzz/corpus/tree_ops fuzz/seeds/tree_ops -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048 -max_len=16384
 cargo +nightly fuzz run artifact_decode fuzz/corpus/artifact_decode fuzz/seeds/artifact_decode -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048 -max_len=65536
+cargo +nightly fuzz run tree_ops --features experimental fuzz/corpus/tree_ops fuzz/seeds/tree_ops -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048 -max_len=16384
 ```
 
 AddressSanitizer is enabled by default. New coverage inputs go to `fuzz/corpus/`;
@@ -41,3 +42,5 @@ that these generated inputs match the checked-in files.
 CI runs each target for 60 seconds on pushes to `main` and pull requests. A
 failure fails the job; logs, discovered corpus inputs, and reproducers are saved
 as workflow artifacts for 14 days. The fuzz package has its own committed lockfile.
+An additional `tree_ops --features experimental` job compares arena mutations,
+snapshots, compaction, and proofs against the default tree and independent model.

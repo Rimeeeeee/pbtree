@@ -71,3 +71,8 @@ required-features = ["bal"]
 name = "persistence"
 harness = false
 required-features = ["persistence"]
+
+[[bench]]
+name = "experimental"
+harness = false
+required-features = ["experimental"]

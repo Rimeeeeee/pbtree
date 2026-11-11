@@ -5,6 +5,7 @@
 //! Client execution, header/finality validation and checkpoint publication remain client-owned.
 
 mod hash;
+#[cfg(feature = "experimental")]
 mod prefix;
 pub use hash::{Blake3Hasher, TreeHasher};
 

@@ -93,7 +93,7 @@ jobs:
           retention-days: 30
 
   fuzz:
-    name: fuzz ${{ matrix.target }}
+    name: fuzz ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -103,10 +103,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: tree_ops
+          - name: tree_ops
+            target: tree_ops
+            flags: ""
             max_len: 16384
-          - target: artifact_decode
+          - name: artifact_decode
+            target: artifact_decode
+            flags: ""
             max_len: 65536
+          - name: tree_ops-experimental
+            target: tree_ops
+            flags: --features experimental
+            max_len: 16384
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@2ab28a31ae569be9f780c7675b684471060afa40 # 2026-10-09T21-43-19Z-2ab28a31
@@ -130,14 +138,14 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p fuzz/corpus/${{ matrix.target }}
-          cargo fuzz run ${{ matrix.target }} fuzz/corpus/${{ matrix.target }} fuzz/seeds/${{ matrix.target }} -- \
+          cargo fuzz run ${{ matrix.target }} ${{ matrix.flags }} fuzz/corpus/${{ matrix.target }} fuzz/seeds/${{ matrix.target }} -- \
             -max_total_time=60 -timeout=10 -rss_limit_mb=2048 -max_len=${{ matrix.max_len }} \
             2>&1 | tee fuzz/${{ matrix.target }}.log
       - name: Upload fuzz results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: fuzz-${{ matrix.target }}
+          name: fuzz-${{ matrix.name }}
           path: |
             fuzz/artifacts/${{ matrix.target }}/
             fuzz/corpus/${{ matrix.target }}/

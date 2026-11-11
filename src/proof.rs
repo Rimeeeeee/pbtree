@@ -133,7 +133,7 @@ impl<H: TreeHasher> BinaryTree<H> {
                 }
                 Node::Branch { prefix, left, right, .. } => {
                     let direction = bit(key, depth + prefix.len());
-                    if !prefix.matches(key, depth) || direction.is_none() {
+                    if !matches_prefix(key, depth, prefix) || direction.is_none() {
                         break ProofTerminal::Branch {
                             prefix: prefix.to_vec(),
                             left: left.hash(),

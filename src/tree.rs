@@ -1,7 +1,6 @@
 use crate::{
     Blake3Hasher, TreeHasher,
-    hash::{leaf_hash, packed_branch_hash},
-    prefix::Prefix,
+    hash::{branch_hash, leaf_hash},
 };
 use alloy_primitives::B256;
 use std::{fmt, marker::PhantomData, sync::Arc};
@@ -85,7 +84,7 @@ impl<H: TreeHasher> BinaryTree<H> {
                     return (stored.as_ref() == key).then_some(*value);
                 }
                 Node::Branch { prefix, left, right, .. } => {
-                    if !prefix.matches(key, depth) {
+                    if !matches_prefix(key, depth, prefix) {
                         return None;
                     }
                     depth += prefix.len();
@@ -252,7 +251,7 @@ pub enum TreeError {
 #[derive(Debug)]
 pub(crate) enum Node {
     Leaf { key: Box<[u8]>, value: B256, hash: B256 },
-    Branch { prefix: Prefix, left: Arc<Self>, right: Arc<Self>, hash: B256 },
+    Branch { prefix: Vec<bool>, left: Arc<Self>, right: Arc<Self>, hash: B256 },
 }
 
 impl Node {
@@ -267,8 +266,8 @@ impl Node {
         Arc::new(Self::Leaf { key, value, hash })
     }
 
-    fn branch<H: TreeHasher>(prefix: Prefix, left: Arc<Self>, right: Arc<Self>) -> Arc<Self> {
-        let hash = packed_branch_hash::<H>(&prefix, left.hash(), right.hash());
+    fn branch<H: TreeHasher>(prefix: Vec<bool>, left: Arc<Self>, right: Arc<Self>) -> Arc<Self> {
+        let hash = branch_hash::<H>(&prefix, left.hash(), right.hash());
         Arc::new(Self::Branch { prefix, left, right, hash })
     }
 }
@@ -309,7 +308,7 @@ fn insert<H: TreeHasher>(
                 let split = (depth..limit)
                     .find(|i| bit(key, *i) != bit(stored, *i))
                     .ok_or(TreeError::PrefixConflict)?;
-                let prefix = Prefix::new((depth..split).map(|i| bit(key, i).unwrap()));
+                let prefix = (depth..split).map(|i| bit(key, i).unwrap()).collect();
                 let leaf = Node::leaf::<H>(key.into(), value);
                 let (left, right) = if bit(key, split).unwrap() {
                     (node.clone(), leaf)
@@ -319,14 +318,21 @@ fn insert<H: TreeHasher>(
                 break (Node::branch::<H>(prefix, left, right), None);
             }
             Node::Branch { prefix, left, right, .. } => {
-                let matched = prefix.common_prefix(key, depth);
+                let matched = prefix
+                    .iter()
+                    .enumerate()
+                    .take_while(|(index, value)| bit(key, depth + index) == Some(**value))
+                    .count();
                 let direction = bit(key, depth + matched).ok_or(TreeError::PrefixConflict)?;
                 if matched < prefix.len() {
-                    let survivor =
-                        Node::branch::<H>(prefix.suffix(matched + 1), left.clone(), right.clone());
+                    let survivor = Node::branch::<H>(
+                        prefix[matched + 1..].to_vec(),
+                        left.clone(),
+                        right.clone(),
+                    );
                     let leaf = Node::leaf::<H>(key.into(), value);
                     let (left, right) = if direction { (survivor, leaf) } else { (leaf, survivor) };
-                    break (Node::branch::<H>(prefix.prefix(matched), left, right), None);
+                    break (Node::branch::<H>(prefix[..matched].to_vec(), left, right), None);
                 }
                 path.push((prefix, if direction { left } else { right }, direction));
                 node = if direction { right } else { left };
@@ -355,7 +361,7 @@ fn remove<H: TreeHasher>(root: &Arc<Node>, key: &[u8]) -> (Option<Arc<Node>>, Op
                 break *value;
             }
             Node::Branch { prefix, left, right, .. } => {
-                if !prefix.matches(key, depth) {
+                if !matches_prefix(key, depth, prefix) {
                     return (Some(root.clone()), None);
                 }
                 let Some(direction) = bit(key, depth + prefix.len()) else {
@@ -377,7 +383,9 @@ fn remove<H: TreeHasher>(root: &Arc<Node>, key: &[u8]) -> (Option<Arc<Node>>, Op
             match sibling.as_ref() {
                 Node::Leaf { .. } => sibling.clone(),
                 Node::Branch { prefix: child_prefix, left, right, .. } => {
-                    let merged = prefix.concat(!direction, child_prefix);
+                    let mut merged = prefix.clone();
+                    merged.push(!direction);
+                    merged.extend(child_prefix);
                     Node::branch::<H>(merged, left.clone(), right.clone())
                 }
             }
@@ -389,7 +397,7 @@ fn remove<H: TreeHasher>(root: &Arc<Node>, key: &[u8]) -> (Option<Arc<Node>>, Op
 fn build<H: TreeHasher>(entries: &[(Vec<u8>, B256)], depth: usize) -> Arc<Node> {
     enum Task<'a> {
         Build(&'a [(Vec<u8>, B256)], usize),
-        Branch(Prefix),
+        Branch(Vec<bool>),
     }
     let mut tasks = vec![Task::Build(entries, depth)];
     let mut nodes = Vec::new();
@@ -409,7 +417,7 @@ fn build<H: TreeHasher>(entries: &[(Vec<u8>, B256)], depth: usize) -> Arc<Node> 
                     .find(|i| bit(first, *i) != bit(last, *i))
                     .expect("validated prefix-free keys");
                 let middle = entries.partition_point(|(key, _)| !bit(key, split).unwrap());
-                let prefix = Prefix::new((depth..split).map(|i| bit(first, i).unwrap()));
+                let prefix = (depth..split).map(|i| bit(first, i).unwrap()).collect();
                 tasks.push(Task::Branch(prefix));
                 tasks.push(Task::Build(&entries[middle..], split + 1));
                 tasks.push(Task::Build(&entries[..middle], split + 1));
@@ -439,7 +447,7 @@ fn build_parallel<H: TreeHasher>(
         .find(|index| bit(first, *index) != bit(last, *index))
         .expect("validated prefix-free keys");
     let middle = entries.partition_point(|(key, _)| !bit(key, split).unwrap());
-    let prefix = Prefix::new((depth..split).map(|index| bit(first, index).unwrap()));
+    let prefix = (depth..split).map(|index| bit(first, index).unwrap()).collect();
     let (left, right) = rayon::join(
         || build_parallel::<H>(&entries[..middle], split + 1, budget - 1),
         || build_parallel::<H>(&entries[middle..], split + 1, budget - 1),

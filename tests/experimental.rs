@@ -67,6 +67,52 @@ fn concurrent_forks_and_compaction_preserve_retained_roots() {
     assert_eq!(anchor.get(&[1, 0]).unwrap(), None);
 }
 
+#[test]
+fn maximum_prefix_merges_match_the_default_tree() {
+    let mut arena = ArenaTree::<Blake3Hasher>::new();
+    let mut reference = BinaryTree::<Blake3Hasher>::new();
+    let keys: Vec<_> = [0, 1, 128]
+        .into_iter()
+        .map(|last| {
+            let mut key = vec![0; pbt::MAX_KEY_LENGTH];
+            *key.last_mut().unwrap() = last;
+            key
+        })
+        .collect();
+    for key in &keys {
+        arena.insert(key.clone(), B256::repeat_byte(1)).unwrap();
+        reference.insert(key.clone(), B256::repeat_byte(1)).unwrap();
+    }
+    arena.remove(&keys[2]).unwrap();
+    reference.remove(&keys[2]);
+    assert_eq!(arena.root(), reference.root());
+    assert_eq!(
+        arena.proof(&keys[0]).unwrap().verify::<Blake3Hasher>(arena.root(), &keys[0]).unwrap(),
+        Some(B256::repeat_byte(1))
+    );
+    arena.compact().unwrap();
+    assert_eq!(arena.root(), reference.root());
+}
+
+#[test]
+fn parallel_comb_build_remains_bounded_on_small_worker_stacks() {
+    let depth = 8192usize;
+    let zero = vec![0; depth / 8];
+    let entries: Vec<_> = std::iter::once((zero.clone(), B256::ZERO))
+        .chain((0..depth).rev().map(|index| {
+            let mut key = zero.clone();
+            key[index / 8] |= 0x80 >> (index % 8);
+            (key, B256::repeat_byte(1))
+        }))
+        .collect();
+    let serial = BinaryTree::<Blake3Hasher>::from_sorted_entries(entries.clone()).unwrap();
+    let pool =
+        rayon::ThreadPoolBuilder::new().num_threads(4).stack_size(64 * 1024).build().unwrap();
+    let parallel =
+        pool.install(|| BinaryTree::<Blake3Hasher>::from_sorted_entries_parallel(entries).unwrap());
+    assert_eq!(serial.root(), parallel.root());
+}
+
 proptest! {
     #[test]
     fn arena_mutations_proofs_and_snapshots_match_reference(

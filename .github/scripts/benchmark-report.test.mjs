@@ -39,3 +39,11 @@ test('rejects stale, malformed and non-finite results before publishing', () => 
   data.head.benchmarks = [row('name\n| injected', 100, 99, 101)];
   assert.throws(() => renderReport(data, options), /benchmark ID/);
 });
+
+test('adding an experimental suite does not disable comparisons for unchanged harnesses', () => {
+  const data = payload([row('tree/op', 100, 99, 101)], [row('tree/op', 80, 79, 81), row('experimental/new', 50, 49, 51)]);
+  data.base.benchmarks[0].source_hash = 'f'.repeat(64);
+  data.head.benchmarks[0].source_hash = 'f'.repeat(64);
+  data.head.suite_hash = 'e'.repeat(64);
+  assert.match(renderReport(data, options), /0 potential regressions · 1 improvements/);
+});

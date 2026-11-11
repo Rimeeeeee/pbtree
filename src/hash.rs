@@ -61,6 +61,7 @@ pub(crate) fn branch_hash<H: TreeHasher>(prefix: &[bool], left: B256, right: B25
     H::hash(&[&[1], &encoded, left.as_slice(), right.as_slice()])
 }
 
+#[cfg(feature = "experimental")]
 pub(crate) fn packed_branch_hash<H: TreeHasher>(
     prefix: &crate::prefix::Prefix,
     left: B256,
@@ -73,4 +74,20 @@ pub(crate) fn packed_branch_hash<H: TreeHasher>(
         left.as_slice(),
         right.as_slice(),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_and_streaming_paths_hash_the_same_concatenation() {
+        for length in 0..=512 {
+            let bytes: Vec<_> = (0..length).map(|index| index as u8).collect();
+            let expected = B256::from(*blake3::hash(&bytes).as_bytes());
+            for split in [0, length / 3, length / 2, length] {
+                assert_eq!(Blake3Hasher::hash(&[&bytes[..split], &[], &bytes[split..]]), expected);
+            }
+        }
+    }
 }

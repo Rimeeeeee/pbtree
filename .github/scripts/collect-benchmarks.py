@@ -13,6 +13,7 @@ from pathlib import Path
 
 def collect(root, criterion, commit):
     benchmarks = []
+    source_hashes = {}
     for estimates_path in sorted(criterion.glob("**/new/estimates.json")):
         metadata = json.loads(estimates_path.with_name("benchmark.json").read_text())
         mean = json.loads(estimates_path.read_text())["mean"]
@@ -22,7 +23,18 @@ def collect(root, criterion, commit):
             raise ValueError(f"Invalid estimate for {metadata['full_id']}")
         if not values[0] <= values[1] <= values[2] or interval["confidence_level"] != 0.95:
             raise ValueError(f"Invalid confidence interval for {metadata['full_id']}")
-        benchmarks.append(dict(id=metadata["full_id"], low_ns=values[0], mean_ns=values[1], high_ns=values[2]))
+        suite = metadata["group_id"].split("/", 1)[0]
+        if suite not in source_hashes:
+            source = root / "benches" / f"{suite}.rs"
+            sources = [source] if source.exists() else sorted((root / "benches").rglob("*.rs"))
+            sources += sorted((root / "benches" / "shared").rglob("*.rs"))
+            digest = hashlib.sha256()
+            for source in sources:
+                digest.update(source.relative_to(root).as_posix().encode())
+                digest.update(b"\0")
+                digest.update(source.read_bytes().replace(b"\r\n", b"\n"))
+            source_hashes[suite] = digest.hexdigest()
+        benchmarks.append(dict(id=metadata["full_id"], source_hash=source_hashes[suite], low_ns=values[0], mean_ns=values[1], high_ns=values[2]))
     if not benchmarks or len({row["id"] for row in benchmarks}) != len(benchmarks):
         raise ValueError("Missing or duplicate Criterion results")
     digest = hashlib.sha256()

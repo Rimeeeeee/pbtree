@@ -201,11 +201,8 @@ fn decode_state<H: TreeHasher>(
                         return Err(ArtifactError::ResourceLimit);
                     }
                     let mut code = Vec::with_capacity(*size);
-                    for index in 0..size.div_ceil(31) {
-                        let chunk = leaves
-                            .get(key::code_key::<H>(*hash, index as u64).as_slice())
-                            .copied()
-                            .unwrap_or_default();
+                    for key in key::code_keys::<H>(*hash, size.div_ceil(31)) {
+                        let chunk = leaves.get(key.as_slice()).copied().unwrap_or_default();
                         let remaining = (*size - code.len()).min(31);
                         code.extend_from_slice(&chunk[1..1 + remaining]);
                     }

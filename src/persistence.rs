@@ -159,7 +159,7 @@ impl NodeDatabase {
                     let start = encoded.len();
                     encoded.resize(start + prefix.len().div_ceil(8), 0);
                     for (index, bit) in prefix.iter().enumerate() {
-                        encoded[start + index / 8] |= u8::from(bit) << (7 - index % 8);
+                        encoded[start + index / 8] |= u8::from(*bit) << (7 - index % 8);
                     }
                     encoded.extend_from_slice(left.hash().as_slice());
                     encoded.extend_from_slice(right.hash().as_slice());

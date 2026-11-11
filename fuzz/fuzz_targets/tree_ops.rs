@@ -73,6 +73,8 @@ fn check_proof(tree: &Tree, model: &Model, key: &[u8], selector: usize) {
 fuzz_target!(|data: &[u8]| {
     let mut tree = Tree::new();
     let mut model = Model::new();
+    #[cfg(feature = "experimental")]
+    let mut arena = pbt::experimental::ArenaTree::<Blake3Hasher>::new();
     for record in data.chunks(42).take(128) {
         let control = record[0];
         let key_len = 1 + usize::from(record.get(1).copied().unwrap_or(0)) % 8;
@@ -83,6 +85,8 @@ fuzz_target!(|data: &[u8]| {
             key = model.keys().nth(index).unwrap().clone();
         }
         let snapshot = tree.clone();
+        #[cfg(feature = "experimental")]
+        let arena_snapshot = arena.clone();
         let previous_root = tree.root();
         let previous_entries = model.clone();
         match control % 4 {
@@ -95,17 +99,43 @@ fuzz_target!(|data: &[u8]| {
                 });
                 if conflict {
                     assert_eq!(tree.insert(key.clone(), value), Err(TreeError::PrefixConflict));
+                    #[cfg(feature = "experimental")]
+                    assert!(matches!(
+                        arena.insert(key.clone(), value),
+                        Err(pbt::experimental::ArenaError::Tree(TreeError::PrefixConflict))
+                    ));
                 } else {
-                    assert_eq!(
-                        tree.insert(key.clone(), value).unwrap(),
-                        model.insert(key.clone(), value)
-                    );
+                    let previous = model.insert(key.clone(), value);
+                    assert_eq!(tree.insert(key.clone(), value).unwrap(), previous);
+                    #[cfg(feature = "experimental")]
+                    assert_eq!(arena.insert(key.clone(), value).unwrap(), previous);
                 }
             }
-            2 => assert_eq!(tree.remove(&key), model.remove(&key)),
+            2 => {
+                let previous = model.remove(&key);
+                assert_eq!(tree.remove(&key), previous);
+                #[cfg(feature = "experimental")]
+                assert_eq!(arena.remove(&key).unwrap(), previous);
+            }
             _ => {}
         }
         assert_eq!(snapshot.root(), previous_root);
+        #[cfg(feature = "experimental")]
+        {
+            if control & 0x80 != 0 {
+                arena.compact().unwrap();
+            }
+            assert_eq!(
+                arena_snapshot.entries().unwrap().into_iter().collect::<Model>(),
+                previous_entries
+            );
+            assert_eq!(arena.root(), tree.root());
+            assert_eq!(arena.get(&key).unwrap(), tree.get(&key));
+            assert_eq!(
+                arena.proof(&key).unwrap().verify::<Blake3Hasher>(tree.root(), &key).unwrap(),
+                tree.get(&key)
+            );
+        }
         assert_eq!(
             snapshot.entries().map(|(key, value)| (key.to_vec(), value)).collect::<Model>(),
             previous_entries

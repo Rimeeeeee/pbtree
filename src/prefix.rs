@@ -48,7 +48,12 @@ impl Prefix {
     }
 
     pub(crate) fn to_vec(&self) -> Vec<bool> {
-        self.iter().collect()
+        let mut bits = Vec::with_capacity(self.len());
+        for byte in self.bytes() {
+            let count = (self.len() - bits.len()).min(8);
+            bits.extend_from_slice(&EXPANDED[*byte as usize][..count]);
+        }
+        bits
     }
 
     pub(crate) fn prefix(&self, len: usize) -> Self {
@@ -104,6 +109,20 @@ impl Prefix {
         }
     }
 }
+
+const EXPANDED: [[bool; 8]; 256] = {
+    let mut table = [[false; 8]; 256];
+    let mut byte = 0;
+    while byte < 256 {
+        let mut bit = 0;
+        while bit < 8 {
+            table[byte][bit] = byte & (0x80 >> bit) != 0;
+            bit += 1;
+        }
+        byte += 1;
+    }
+    table
+};
 
 #[cfg(test)]
 mod tests {

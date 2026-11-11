@@ -2,9 +2,58 @@
 
 use alloy_primitives::{Address, B256, U256, keccak256};
 use pbt::{AccountData, Blake3Hasher, StateError, StateTree, StateUpdate, key};
+use proptest::{collection, prelude::*};
 
 fn account(code: Vec<u8>) -> AccountData {
     AccountData { nonce: 1, balance: U256::from(5), code: code.into() }
+}
+
+proptest! {
+    #[test]
+    fn ordered_batches_match_serial_state_machine(operations in collection::vec((any::<u8>(), any::<u8>(), any::<u8>()), 0..150)) {
+        let mut initial = StateTree::<Blake3Hasher>::new();
+        for index in 0..4 { initial.set_account(Address::repeat_byte(index), account(Vec::new())).unwrap(); }
+        let mut serial = initial.clone();
+        let mut changes = Vec::new();
+        let mut failed = false;
+        for (address, action, value) in operations {
+            let address = Address::repeat_byte(address % 8);
+            let result = match action % 4 {
+                0 => {
+                    let code = if value % 3 == 0 { Vec::new() } else { vec![0x7f; usize::from(value % 4) * 31] };
+                    let data = AccountData { nonce: u64::from(value % 3), balance: U256::from(value % 5), code: code.into() };
+                    changes.push(StateUpdate::Account { address, account: Some(data.clone()) });
+                    serial.apply_account(address, Some(data))
+                }
+                1 => {
+                    changes.push(StateUpdate::Account { address, account: None });
+                    serial.apply_account(address, None)
+                }
+                2 => {
+                    let slot = U256::from(value);
+                    let new_value = if value % 7 == 0 { B256::ZERO } else { B256::repeat_byte(value) };
+                    changes.push(StateUpdate::Storage { address, slot, value: new_value });
+                    serial.set_storage(address, slot, new_value)
+                }
+                _ => {
+                    changes.push(StateUpdate::ClearStorage { address });
+                    serial.clear_storage(address);
+                    Ok(())
+                }
+            };
+            if result.is_err() { failed = true; break; }
+        }
+        let mut batched = initial.clone();
+        let result = batched.apply_batch(changes);
+        if failed {
+            prop_assert!(result.is_err());
+            prop_assert_eq!(batched.root(), initial.root());
+        } else {
+            prop_assert!(result.is_ok());
+            prop_assert_eq!(batched.root(), serial.root());
+            prop_assert_eq!(batched.tree().entries().collect::<Vec<_>>(), serial.tree().entries().collect::<Vec<_>>());
+        }
+    }
 }
 
 #[test]
