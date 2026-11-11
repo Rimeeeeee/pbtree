@@ -61,21 +61,6 @@ pub(crate) fn branch_hash<H: TreeHasher>(prefix: &[bool], left: B256, right: B25
     H::hash(&[&[1], &encoded, left.as_slice(), right.as_slice()])
 }
 
-#[cfg(feature = "arena")]
-pub(crate) fn packed_branch_hash<H: TreeHasher>(
-    prefix: &crate::prefix::Prefix,
-    left: B256,
-    right: B256,
-) -> B256 {
-    H::hash(&[
-        &[1],
-        &(prefix.len() as u16).to_be_bytes(),
-        prefix.bytes(),
-        left.as_slice(),
-        right.as_slice(),
-    ])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,8 +5,6 @@
 //! Client execution, header/finality validation and checkpoint publication remain client-owned.
 
 mod hash;
-#[cfg(feature = "arena")]
-mod prefix;
 pub use hash::{Blake3Hasher, TreeHasher};
 
 mod tree;
@@ -20,10 +18,6 @@ pub mod key;
 
 mod state;
 pub use state::{AccountData, StateError, StateTree, StateUpdate};
-
-/// Opt-in arena storage for comparing allocation/cache tradeoffs with the reference tree.
-#[cfg(feature = "arena")]
-pub mod arena;
 
 /// Canonical snapshot/preimage artifacts, bounded decoding, and dual-root verification.
 #[cfg(feature = "migration")]

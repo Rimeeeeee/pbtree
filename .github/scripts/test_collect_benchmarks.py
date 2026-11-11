@@ -30,7 +30,7 @@ class CollectorTests(unittest.TestCase):
 
             with patch.object(collector.subprocess, "check_output", side_effect=command):
                 before = collector.collect(root, root / "criterion", "a" * 40)
-                (root / "benches/backends.rs").write_text("fn arena_benchmark() {}\n")
+                (root / "benches/backends.rs").write_text("fn parallel_benchmark() {}\n")
                 after = collector.collect(root, root / "criterion", "b" * 40)
                 self.assertEqual(after["benchmarks"][0]["samples"], 50)
                 self.assertEqual(after["physical_cores"], 2)

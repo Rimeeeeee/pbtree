@@ -35,7 +35,6 @@ migration = ["dep:alloy-trie"]
 bal = ["dep:alloy-eip7928"]
 persistence = ["migration", "dep:rocksdb"]
 parallel = ["dep:rayon"]
-arena = []
 
 [lints.rust]
 missing_docs = "warn"
@@ -76,4 +75,4 @@ required-features = ["persistence"]
 [[bench]]
 name = "backends"
 harness = false
-required-features = ["parallel", "arena"]
+required-features = ["parallel"]

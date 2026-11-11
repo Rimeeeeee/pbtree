@@ -14,7 +14,6 @@ primitives for [EIP-8347](https://eips.ethereum.org/EIPS/eip-8347).
 - `persistence`: content-addressed RocksDB trie nodes, synced incremental writes,
   verified cold restoration, and registered-root garbage collection.
 - `parallel`: Rayon bulk construction of sorted trees. Disabled by default.
-- `arena`: append-only tree storage with compact node indices. Disabled by default.
 
 Reth-specific execution bundles, retained-state cursors, finality/header checks,
 atomic checkpoint files, node startup, staged backfill and RPC remain in Reth.
@@ -64,11 +63,6 @@ inputs use the serial builder; callers can select a Rayon thread pool.
 `StateTree::apply_batch_parallel`, `BinaryTree::apply_updates_parallel`, and
 `replay::replay_parallel` also use parallel hashing for dense batches. Sparse
 updates keep incremental path copying; roots and validation rules match the serial APIs.
-With `arena` enabled, `pbt::arena::ArenaTree` provides a separate API: snapshots
-share append-only storage, writers share a lock, and historical nodes remain
-allocated until the arena is released. `compact()` detaches one snapshot into
-fresh storage. Enabling either feature keeps the existing `BinaryTree`, `StateTree`,
-and database APIs in use.
 
 Enable the feature in a consuming crate:
 
@@ -92,8 +86,8 @@ assert_eq!(tree.len(), 16_384);
 ```
 
 ```sh
-cargo test --features parallel,arena
-cargo bench --features parallel,arena --bench backends
+cargo test --features parallel
+cargo bench --features parallel --bench backends
 ```
 
 Coverage-guided tree and artifact fuzzing runs in CI. Local commands and input
@@ -149,25 +143,17 @@ Tree cases use Ethereum header keys. State fixtures have four storage slots per 
 | Synced save, unchanged state | 16,384 accounts | 2.26 ms |
 | Verified state reconstruction, warm DB cache | 16,384 accounts | 1.11 s |
 
-### Parallel builder and arena
+### Parallel builder
 
 These cases use identical sorted 32-byte keys for every backend.
 
-| Sorted build | Default tree | `parallel` | `arena` |
-|---|---:|---:|---:|
-| 16,384 leaves | 10.7 ms | 4.26 ms | 10.7 ms |
-| 65,536 leaves | 43.1 ms | 8.83 ms | 42.3 ms |
-| 262,144 leaves | 181 ms | 23.2 ms | 177 ms |
-
-| Operation | Leaves | Default tree | `arena` |
-|---|---:|---:|---:|
-| Lookup | 16,384 | 87.1 ns | 123 ns |
-| Replacement | 16,384 | 4.03 us | 4.23 us |
-| Lookup | 262,144 | 148 ns | 192 ns |
-| Replacement | 262,144 | 6.01 us | 1.96 ms |
+| Sorted build | Default tree | `parallel` |
+|---|---:|---:|
+| 16,384 leaves | 10.7 ms | 4.26 ms |
+| 65,536 leaves | 43.1 ms | 8.83 ms |
+| 262,144 leaves | 181 ms | 23.2 ms |
 
 Fixture setup is untimed. Point reads and writes target a fixed key/account.
 Persistence saves include synchronous WAL writes and exclude root removal and GC;
 state reconstruction uses a fresh in-memory state with potentially warm database
-and OS caches. Arena replacement timings exclude periodic compaction but include
-any node-vector growth on the next write.
+and OS caches.

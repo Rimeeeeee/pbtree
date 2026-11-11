@@ -86,3 +86,37 @@ fn dense_state_batches_and_parallel_replay_match_serial_state() {
         assert_eq!(parallel.root(), serial.root());
     }
 }
+
+#[test]
+fn parallel_builders_match_serial_in_single_and_multiple_thread_pools() {
+    let entries: Vec<_> = (0u64..8192)
+        .map(|index| (index.to_be_bytes().to_vec(), B256::from(U256::from(index))))
+        .collect();
+    let serial = BinaryTree::<Blake3Hasher>::from_sorted_entries(entries.clone()).unwrap();
+    for threads in [1, 4] {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+        let parallel = pool.install(|| {
+            BinaryTree::<Blake3Hasher>::from_sorted_entries_parallel(entries.clone()).unwrap()
+        });
+        assert_eq!(parallel.root(), serial.root());
+    }
+}
+
+#[test]
+fn parallel_comb_build_remains_bounded_on_small_worker_stacks() {
+    let depth = 8192usize;
+    let zero = vec![0; depth / 8];
+    let entries: Vec<_> = std::iter::once((zero.clone(), B256::ZERO))
+        .chain((0..depth).rev().map(|index| {
+            let mut key = zero.clone();
+            key[index / 8] |= 0x80 >> (index % 8);
+            (key, B256::repeat_byte(1))
+        }))
+        .collect();
+    let serial = BinaryTree::<Blake3Hasher>::from_sorted_entries(entries.clone()).unwrap();
+    let pool =
+        rayon::ThreadPoolBuilder::new().num_threads(4).stack_size(64 * 1024).build().unwrap();
+    let parallel =
+        pool.install(|| BinaryTree::<Blake3Hasher>::from_sorted_entries_parallel(entries).unwrap());
+    assert_eq!(serial.root(), parallel.root());
+}

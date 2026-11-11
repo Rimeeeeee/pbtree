@@ -14,9 +14,6 @@ pbt = { path = "..", features = ["migration"] }
 
 [workspace]
 
-[features]
-arena = ["pbt/arena"]
-
 [[bin]]
 name = "tree_ops"
 path = "fuzz_targets/tree_ops.rs"
