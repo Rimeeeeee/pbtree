@@ -159,7 +159,7 @@ fn batches_validate_the_final_prefix_free_set_atomically() {
 proptest! {
     #[test]
     fn adaptive_batches_match_final_map(
-        initial in collection::btree_map(any::<[u8; 2]>(), any::<[u8; 32]>(), 0..150),
+        initial in collection::btree_map(any::<[u8; 2]>(), any::<[u8; 32]>(), 0..600),
         updates in collection::vec((any::<[u8; 2]>(), proptest::option::of(any::<[u8; 32]>())), 0..200),
     ) {
         let mut model: BTreeMap<_, _> = initial.into_iter().map(|(key, value)| (key.to_vec(), B256::from(value))).collect();

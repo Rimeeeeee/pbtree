@@ -135,14 +135,14 @@ impl<H: TreeHasher> BinaryTree<H> {
                     let direction = bit(key, depth + prefix.len());
                     if !matches_prefix(key, depth, prefix) || direction.is_none() {
                         break ProofTerminal::Branch {
-                            prefix: prefix.to_vec(),
+                            prefix: prefix.clone(),
                             left: left.hash(),
                             right: right.hash(),
                         };
                     }
                     let direction = direction.unwrap();
                     steps.push(ProofStep {
-                        prefix: prefix.to_vec(),
+                        prefix: prefix.clone(),
                         right: direction,
                         sibling: if direction { left.hash() } else { right.hash() },
                     });

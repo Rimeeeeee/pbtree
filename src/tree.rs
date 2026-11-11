@@ -139,7 +139,9 @@ impl<H: TreeHasher> BinaryTree<H> {
         if updates.is_empty() {
             return Ok(());
         }
-        if self.is_empty() || (updates.len() >= 64 && updates.len().saturating_mul(8) >= self.len) {
+        // Rebuilding the whole tree only pays off for sufficiently dense batches.
+        // Keep smaller block updates incremental even when they touch many leaves.
+        if self.is_empty() || (updates.len() >= 64 && updates.len().saturating_mul(4) >= self.len) {
             let mut entries: std::collections::BTreeMap<_, _> =
                 self.entries().map(|(key, value)| (key.to_vec(), value)).collect();
             for (key, value) in updates {
