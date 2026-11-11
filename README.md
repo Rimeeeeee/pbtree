@@ -36,6 +36,13 @@ let commitment = state.root();
 # Ok::<(), pbt::StateError>(())
 ```
 
+For bulk writes, `BinaryTree::apply_updates` accepts `(key, Some(value))` writes
+and `(key, None)` deletions, with the last update winning for repeated keys.
+Explicit zero values remain leaves in the generic tree. `StateTree::apply_batch`
+accepts ordered `StateUpdate` account, storage, and storage-clear operations;
+zero storage values delete slots, and absent or empty account updates clear the
+account. Both methods leave the original tree unchanged if the batch is invalid.
+
 Native database users must serialize composite operations with
 `NodeDatabase::mutation`: write nodes/root records first, durably publish their
 own block references afterwards, and remove references before unregistering roots
@@ -59,6 +66,27 @@ writers share a lock, and historical nodes remain allocated until the arena is
 released. `compact()` detaches one snapshot into fresh storage. Enabling the
 feature keeps the existing `BinaryTree`, `StateTree`, and database APIs in use.
 
+Enable the feature in a consuming crate:
+
+```toml
+[dependencies]
+pbt = { git = "https://github.com/Rimeeeeee/pbtree", features = ["experimental"] }
+alloy-primitives = "1.6.1"
+```
+
+Then select the parallel builder explicitly:
+
+```rust
+use alloy_primitives::B256;
+use pbt::{BinaryTree, Blake3Hasher};
+
+// Keys must be strictly ascending, unique, and prefix-free.
+let entries = (0u32..16_384)
+    .map(|index| (index.to_be_bytes().to_vec(), B256::repeat_byte(1)));
+let tree = BinaryTree::<Blake3Hasher>::from_sorted_entries_parallel(entries).unwrap();
+assert_eq!(tree.len(), 16_384);
+```
+
 ```sh
 cargo test --features experimental
 cargo bench --features experimental --bench experimental
@@ -81,27 +109,27 @@ Ryzen 9 8940HX under Ubuntu WSL2, using
 These are mean times with 10 samples, 0.5 s warm-up, and a 1 s target measurement.
 [All 53 baseline and 70 selected results, with 95% confidence intervals](benches/results/optimizations-2026-11-11.json)
 include the full environment and source commits. Lower time is better; small
-differences can be noise.
+differences can be noise. Percentage changes use the unrounded mean times.
 
-| Operation | Fixture | Before | After |
-|---|---|---:|---:|
-| Sorted tree build | 16,384 leaves | 11.0 ms | 10.6 ms |
-| Incremental tree build | 16,384 leaves | 89.5 ms | 74.2 ms |
-| Leaf replacement | 16,384 leaves | 4.47 us | 3.89 us |
-| Leaf removal | 16,384 leaves | 4.14 us | 3.70 us |
-| Membership proof generation | 16,384 leaves | 304 ns | 273 ns |
-| Membership proof verification | 16,384 leaves | 4.72 us | 3.26 us |
-| Account balance update | 2,048 accounts | 16.9 us | 6.08 us |
-| Overflow storage replacement | 2,048 accounts | 7.24 us | 5.94 us |
-| Artifact encoding | 2,048 accounts | 72.6 ms | 8.83 ms |
-| MPT anchor verification | 2,048 accounts | 206 ms | 71.2 ms |
-| PBT checkpoint restoration | 2,048 accounts | 174 ms | 53.9 ms |
-| Authenticated BAL replay | 64 changed accounts | 2.70 ms | 1.57 ms |
-| Authenticated BAL replay | 256 changed accounts | 11.7 ms | 4.94 ms |
-| Midpoint finalization | 4,096 layers | 1.82 ms | 1.80 ms |
-| Synced save, one account changed | 4,096 accounts | 2.93 ms | 2.15 ms |
-| Synced save, unchanged state | 4,096 accounts | 2.18 ms | 1.77 ms |
-| Verified state reconstruction, warm DB cache | 4,096 accounts | 546 ms | 200 ms |
+| Operation | Fixture | Before | After | Change |
+|---|---|---:|---:|---:|
+| Sorted tree build | 16,384 leaves | 11.0 ms | 10.6 ms | -3.4% |
+| Incremental tree build | 16,384 leaves | 89.5 ms | 74.2 ms | -17.2% |
+| Leaf replacement | 16,384 leaves | 4.47 us | 3.89 us | -12.9% |
+| Leaf removal | 16,384 leaves | 4.14 us | 3.70 us | -10.7% |
+| Membership proof generation | 16,384 leaves | 304 ns | 273 ns | -10.3% |
+| Membership proof verification | 16,384 leaves | 4.72 us | 3.26 us | -30.8% |
+| Account balance update | 2,048 accounts | 16.9 us | 6.08 us | -64.1% |
+| Overflow storage replacement | 2,048 accounts | 7.24 us | 5.94 us | -18.0% |
+| Artifact encoding | 2,048 accounts | 72.6 ms | 8.83 ms | -87.8% |
+| MPT anchor verification | 2,048 accounts | 206 ms | 71.2 ms | -65.5% |
+| PBT checkpoint restoration | 2,048 accounts | 174 ms | 53.9 ms | -69.1% |
+| Authenticated BAL replay | 64 changed accounts | 2.70 ms | 1.57 ms | -41.9% |
+| Authenticated BAL replay | 256 changed accounts | 11.7 ms | 4.94 ms | -57.7% |
+| Midpoint finalization | 4,096 layers | 1.82 ms | 1.80 ms | -1.2% |
+| Synced save, one account changed | 4,096 accounts | 2.93 ms | 2.15 ms | -26.7% |
+| Synced save, unchanged state | 4,096 accounts | 2.18 ms | 1.77 ms | -19.0% |
+| Verified state reconstruction, warm DB cache | 4,096 accounts | 546 ms | 200 ms | -63.3% |
 
 Fixture construction is excluded. Persistence saves include synchronous WAL
 writes; reconstruction starts with a fresh in-memory state while RocksDB/OS
