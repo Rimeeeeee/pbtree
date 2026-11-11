@@ -44,7 +44,17 @@ proptest! {
             if result.is_err() { failed = true; break; }
         }
         let mut batched = initial.clone();
+        #[cfg(feature = "parallel")]
+        let mut parallel = initial.clone();
+        #[cfg(feature = "parallel")]
+        let parallel_result = parallel.apply_batch_parallel(changes.clone());
         let result = batched.apply_batch(changes);
+        #[cfg(feature = "parallel")]
+        {
+            prop_assert_eq!(&parallel_result, &result);
+            prop_assert_eq!(parallel.root(), batched.root());
+            prop_assert_eq!(parallel.tree().entries().collect::<Vec<_>>(), batched.tree().entries().collect::<Vec<_>>());
+        }
         if failed {
             prop_assert!(result.is_err());
             prop_assert_eq!(batched.root(), initial.root());

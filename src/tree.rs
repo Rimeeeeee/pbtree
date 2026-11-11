@@ -132,6 +132,24 @@ impl<H: TreeHasher> BinaryTree<H> {
         &mut self,
         updates: impl IntoIterator<Item = (Vec<u8>, Option<B256>)>,
     ) -> Result<(), TreeError> {
+        self.apply_updates_with(updates, Self::from_sorted_entries)
+    }
+
+    /// Atomically applies updates, hashing dense rebuilt subtrees in parallel.
+    /// Small and sparse batches retain incremental path copying and error semantics.
+    #[cfg(feature = "parallel")]
+    pub fn apply_updates_parallel(
+        &mut self,
+        updates: impl IntoIterator<Item = (Vec<u8>, Option<B256>)>,
+    ) -> Result<(), TreeError> {
+        self.apply_updates_with(updates, Self::from_sorted_entries_parallel)
+    }
+
+    fn apply_updates_with(
+        &mut self,
+        updates: impl IntoIterator<Item = (Vec<u8>, Option<B256>)>,
+        build: impl FnOnce(std::collections::BTreeMap<Vec<u8>, B256>) -> Result<Self, TreeError>,
+    ) -> Result<(), TreeError> {
         let updates: std::collections::BTreeMap<_, _> = updates.into_iter().collect();
         for key in updates.keys() {
             validate_key(key)?;
@@ -151,7 +169,7 @@ impl<H: TreeHasher> BinaryTree<H> {
                     entries.remove(&key);
                 }
             }
-            *self = Self::from_sorted_entries(entries)?;
+            *self = build(entries)?;
         } else {
             let mut next = self.clone();
             for (key, value) in &updates {

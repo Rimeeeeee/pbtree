@@ -73,6 +73,24 @@ impl<H: TreeHasher> StateTree<H> {
         &mut self,
         updates: impl IntoIterator<Item = StateUpdate>,
     ) -> Result<(), StateError> {
+        self.apply_batch_with(updates, Self::finish_batch)
+    }
+
+    /// Applies ordered state changes atomically, hashing dense batches in parallel.
+    /// Account clearing, storage deletion, and failed-batch behavior match [`Self::apply_batch`].
+    #[cfg(feature = "parallel")]
+    pub fn apply_batch_parallel(
+        &mut self,
+        updates: impl IntoIterator<Item = StateUpdate>,
+    ) -> Result<(), StateError> {
+        self.apply_batch_with(updates, Self::finish_batch_parallel)
+    }
+
+    fn apply_batch_with(
+        &mut self,
+        updates: impl IntoIterator<Item = StateUpdate>,
+        finish: impl FnOnce(&mut Self) -> Result<(), StateError>,
+    ) -> Result<(), StateError> {
         let mut next = self.clone();
         next.begin_batch();
         for update in updates {
@@ -86,7 +104,7 @@ impl<H: TreeHasher> StateTree<H> {
                 StateUpdate::ClearStorage { address } => next.clear_storage(address),
             }
         }
-        next.finish_batch()?;
+        finish(&mut next)?;
         *self = next;
         Ok(())
     }
@@ -99,6 +117,14 @@ impl<H: TreeHasher> StateTree<H> {
     pub(crate) fn finish_batch(&mut self) -> Result<(), StateError> {
         if let Some(updates) = self.pending.take() {
             self.tree.apply_updates(*updates)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "parallel")]
+    pub(crate) fn finish_batch_parallel(&mut self) -> Result<(), StateError> {
+        if let Some(updates) = self.pending.take() {
+            self.tree.apply_updates_parallel(*updates)?;
         }
         Ok(())
     }

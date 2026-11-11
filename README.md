@@ -61,6 +61,9 @@ With `parallel` enabled, call
 `BinaryTree::from_sorted_entries_parallel` to build sorted leaves using Rayon.
 It returns the usual `BinaryTree` with the same root and proof format. Small
 inputs use the serial builder; callers can select a Rayon thread pool.
+`StateTree::apply_batch_parallel`, `BinaryTree::apply_updates_parallel`, and
+`replay::replay_parallel` also use parallel hashing for dense batches. Sparse
+updates keep incremental path copying; roots and validation rules match the serial APIs.
 With `arena` enabled, `pbt::arena::ArenaTree` provides a separate API: snapshots
 share append-only storage, writers share a lock, and historical nodes remain
 allocated until the arena is released. `compact()` detaches one snapshot into

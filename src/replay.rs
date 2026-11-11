@@ -17,6 +17,26 @@ pub fn replay<H: TreeHasher>(
     bal: &[AccountChanges],
     expected_bal_hash: B256,
 ) -> Result<StateTree<H>, ReplayError> {
+    replay_with(parent, bal, expected_bal_hash, StateTree::finish_batch)
+}
+
+/// Replays authenticated post-values with parallel hashing for dense state changes.
+/// Authentication, validation, and parent-snapshot guarantees match [`replay`].
+#[cfg(feature = "parallel")]
+pub fn replay_parallel<H: TreeHasher>(
+    parent: &StateTree<H>,
+    bal: &[AccountChanges],
+    expected_bal_hash: B256,
+) -> Result<StateTree<H>, ReplayError> {
+    replay_with(parent, bal, expected_bal_hash, StateTree::finish_batch_parallel)
+}
+
+fn replay_with<H: TreeHasher>(
+    parent: &StateTree<H>,
+    bal: &[AccountChanges],
+    expected_bal_hash: B256,
+    finish: impl FnOnce(&mut StateTree<H>) -> Result<(), StateError>,
+) -> Result<StateTree<H>, ReplayError> {
     if compute_block_access_list_hash(bal) != expected_bal_hash {
         return Err(ReplayError::BalHashMismatch);
     }
@@ -67,7 +87,7 @@ pub fn replay<H: TreeHasher>(
             }
         }
     }
-    state.finish_batch()?;
+    finish(&mut state)?;
     Ok(state)
 }
 
