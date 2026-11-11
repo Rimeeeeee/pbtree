@@ -1,0 +1,1076 @@
+{
+  "schema": 1,
+  "base": {
+    "commit": "4a83606edba6613336404237724cc5c70a0f0e7c",
+    "measured_at": "2026-11-11T06:30:31.226235+00:00",
+    "suite_hash": "f8af3bbe8e3b01acfd733b8269a25e381c53725bd376abf59ce700d7b9c1a8ba",
+    "toolchain": "rustc 1.97.0-nightly (d3cd04068 2026-05-16)",
+    "platform": "Linux-6.18.58.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "cpu": "AMD Ryzen 9 8940HX with Radeon Graphics",
+    "profile": "release; all features; 10 samples; 0.5s warm-up; 1s measurement; 95% confidence intervals",
+    "benchmarks": [
+      {
+        "id": "migration/artifacts/encode/128",
+        "source_hash": "7023718b5285206c7d00747458b064f5e89ef1b080c6b31b552148c1416f9e4f",
+        "low_ns": 2884389.8132407414,
+        "mean_ns": 2981222.777175926,
+        "high_ns": 3110306.0564537034
+      },
+      {
+        "id": "migration/artifacts/encode/2048",
+        "source_hash": "7023718b5285206c7d00747458b064f5e89ef1b080c6b31b552148c1416f9e4f",
+        "low_ns": 65188579.1,
+        "mean_ns": 72630870.4,
+        "high_ns": 85477312.4
+      },
+      {
+        "id": "migration/artifacts/restore_pbt_checkpoint/128",
+        "source_hash": "7023718b5285206c7d00747458b064f5e89ef1b080c6b31b552148c1416f9e4f",
+        "low_ns": 8456063.252166664,
+        "mean_ns": 8638100.05,
+        "high_ns": 8933853.895666666
+      },
+      {
+        "id": "migration/artifacts/restore_pbt_checkpoint/2048",
+        "source_hash": "7023718b5285206c7d00747458b064f5e89ef1b080c6b31b552148c1416f9e4f",
+        "low_ns": 171574023.2,
+        "mean_ns": 174414480.0,
+        "high_ns": 177878933.4
+      },
+      {
+        "id": "migration/artifacts/verify_mpt_anchor/128",
+        "source_hash": "7023718b5285206c7d00747458b064f5e89ef1b080c6b31b552148c1416f9e4f",
+        "low_ns": 9874923.59486111,
+        "mean_ns": 9956551.894265873,
+        "high_ns": 10060873.18127232
+      },
+      {
+        "id": "migration/artifacts/verify_mpt_anchor/2048",
+        "source_hash": "7023718b5285206c7d00747458b064f5e89ef1b080c6b31b552148c1416f9e4f",
+        "low_ns": 200734265.6,
+        "mean_ns": 206083762.4,
+        "high_ns": 212176030.2
+      },
+      {
+        "id": "persistence/load/verified_cold_state_warm_db_cache/256",
+        "source_hash": "82f67b5ddf1d86c41f1cae1386dcfb0f4eaed445601e67f56e6344fd13cef42a",
+        "low_ns": 24565759.63015873,
+        "mean_ns": 24668555.204325397,
+        "high_ns": 24779669.036542658
+      },
+      {
+        "id": "persistence/load/verified_cold_state_warm_db_cache/4096",
+        "source_hash": "82f67b5ddf1d86c41f1cae1386dcfb0f4eaed445601e67f56e6344fd13cef42a",
+        "low_ns": 537457494.2925,
+        "mean_ns": 545647078.1,
+        "high_ns": 556093108.9
+      },
+      {
+        "id": "persistence/save/sync_one_account_change/256",
+        "source_hash": "82f67b5ddf1d86c41f1cae1386dcfb0f4eaed445601e67f56e6344fd13cef42a",
+        "low_ns": 2401306.0300000003,
+        "mean_ns": 2524051.911164021,
+        "high_ns": 2663307.9293650794
+      },
+      {
+        "id": "persistence/save/sync_one_account_change/4096",
+        "source_hash": "82f67b5ddf1d86c41f1cae1386dcfb0f4eaed445601e67f56e6344fd13cef42a",
+        "low_ns": 2680520.5925,
+        "mean_ns": 2928518.0,
+        "high_ns": 3190781.7
+      },
+      {
+        "id": "persistence/save/sync_unchanged/256",
+        "source_hash": "82f67b5ddf1d86c41f1cae1386dcfb0f4eaed445601e67f56e6344fd13cef42a",
+        "low_ns": 1973695.9135555557,
+        "mean_ns": 2023576.9696984128,
+        "high_ns": 2079465.154824603
+      },
+      {
+        "id": "persistence/save/sync_unchanged/4096",
+        "source_hash": "82f67b5ddf1d86c41f1cae1386dcfb0f4eaed445601e67f56e6344fd13cef42a",
+        "low_ns": 2112543.030330247,
+        "mean_ns": 2184903.926450617,
+        "high_ns": 2260974.443026235
+      },
+      {
+        "id": "replay/authenticated_bal/1",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 30141.950922118376,
+        "mean_ns": 31244.745033081144,
+        "high_ns": 32493.21623230974
+      },
+      {
+        "id": "replay/authenticated_bal/256",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 11425335.69595238,
+        "mean_ns": 11703687.663849209,
+        "high_ns": 11979960.640482143
+      },
+      {
+        "id": "replay/authenticated_bal/64",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 2614567.150651927,
+        "mean_ns": 2695030.0090532885,
+        "high_ns": 2796787.586230159
+      },
+      {
+        "id": "replay/finalize_linear_chain/midpoint/1024",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 384749.2109083523,
+        "mean_ns": 389716.444718443,
+        "high_ns": 398593.2430687831
+      },
+      {
+        "id": "replay/finalize_linear_chain/midpoint/128",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 32664.53997037037,
+        "mean_ns": 33547.23081622574,
+        "high_ns": 34447.2360026984
+      },
+      {
+        "id": "replay/finalize_linear_chain/midpoint/4096",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 1798609.9284361112,
+        "mean_ns": 1822667.919373016,
+        "high_ns": 1864147.7258571428
+      },
+      {
+        "id": "replay/finalize_linear_chain/midpoint/512",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 167136.34481203006,
+        "mean_ns": 167637.34357560566,
+        "high_ns": 168242.54797326648
+      },
+      {
+        "id": "replay/finalize_linear_chain/same_anchor/1024",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 107.33991273352997,
+        "mean_ns": 114.44102050849838,
+        "high_ns": 120.8030762747577
+      },
+      {
+        "id": "replay/finalize_linear_chain/same_anchor/128",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 72.58350189947305,
+        "mean_ns": 75.00156821010945,
+        "high_ns": 78.06597047270758
+      },
+      {
+        "id": "replay/finalize_linear_chain/same_anchor/4096",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 173.62638176638177,
+        "mean_ns": 186.67588726088727,
+        "high_ns": 203.69245421245418
+      },
+      {
+        "id": "replay/finalize_linear_chain/same_anchor/512",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 89.6496776837928,
+        "mean_ns": 94.15404123735264,
+        "high_ns": 98.66625127633901
+      },
+      {
+        "id": "replay/finalize_linear_chain/tip/1024",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 314983.71759838273,
+        "mean_ns": 321010.92797394434,
+        "high_ns": 328594.74901168013
+      },
+      {
+        "id": "replay/finalize_linear_chain/tip/128",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 31082.00451673239,
+        "mean_ns": 31813.485601304215,
+        "high_ns": 32280.90063510388
+      },
+      {
+        "id": "replay/finalize_linear_chain/tip/4096",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 1349421.6171428573,
+        "mean_ns": 1373152.884191087,
+        "high_ns": 1400241.6211111112
+      },
+      {
+        "id": "replay/finalize_linear_chain/tip/512",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 145367.9613577327,
+        "mean_ns": 147703.99913770915,
+        "high_ns": 150439.99812387384
+      },
+      {
+        "id": "state/update/account_balance/128",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 13331.93884451887,
+        "mean_ns": 13673.987975367481,
+        "high_ns": 14072.585308666821
+      },
+      {
+        "id": "state/update/account_balance/2048",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 16741.206148543628,
+        "mean_ns": 16928.813535455098,
+        "high_ns": 17117.396054586952
+      },
+      {
+        "id": "state/update/inline_storage_replace/128",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 5497.445669142274,
+        "mean_ns": 5586.3196608347735,
+        "high_ns": 5685.347992469158
+      },
+      {
+        "id": "state/update/inline_storage_replace/2048",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 7642.002853915091,
+        "mean_ns": 7701.645930261258,
+        "high_ns": 7759.54747863978
+      },
+      {
+        "id": "state/update/overflow_storage_delete/128",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 4124.1942676125245,
+        "mean_ns": 4272.296408240922,
+        "high_ns": 4433.771268717837
+      },
+      {
+        "id": "state/update/overflow_storage_delete/2048",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 5622.491204746884,
+        "mean_ns": 5843.193899010708,
+        "high_ns": 6128.170300650227
+      },
+      {
+        "id": "state/update/overflow_storage_replace/128",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 5031.622847967157,
+        "mean_ns": 5120.057909800657,
+        "high_ns": 5239.9081719356
+      },
+      {
+        "id": "state/update/overflow_storage_replace/2048",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 7024.327303225046,
+        "mean_ns": 7235.272487803784,
+        "high_ns": 7481.56021966864
+      },
+      {
+        "id": "state/update/remove_account_shared_code/128",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 25690.291312893078,
+        "mean_ns": 26091.158755740245,
+        "high_ns": 26519.045610586996
+      },
+      {
+        "id": "state/update/remove_account_shared_code/2048",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 33739.2433647141,
+        "mean_ns": 33846.60021543137,
+        "high_ns": 33950.66073495716
+      },
+      {
+        "id": "tree/build/incremental_insert/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 3817507.573547619,
+        "mean_ns": 3842561.256436507,
+        "high_ns": 3879187.4664365076
+      },
+      {
+        "id": "tree/build/incremental_insert/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 88799590.8225,
+        "mean_ns": 89541446.05,
+        "high_ns": 90436939.15
+      },
+      {
+        "id": "tree/build/sorted/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 629549.9874305555,
+        "mean_ns": 632609.2830720898,
+        "high_ns": 637477.277594246
+      },
+      {
+        "id": "tree/build/sorted/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 10891612.156130953,
+        "mean_ns": 10983847.21863095,
+        "high_ns": 11111195.668333333
+      },
+      {
+        "id": "tree/mutate/remove/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 2964.0006104033964,
+        "mean_ns": 2998.8477393253124,
+        "high_ns": 3039.1437889832505
+      },
+      {
+        "id": "tree/mutate/remove/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 4126.652362045234,
+        "mean_ns": 4136.056448188036,
+        "high_ns": 4146.81061609626
+      },
+      {
+        "id": "tree/mutate/replace/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 3522.554514161843,
+        "mean_ns": 3553.6457593181512,
+        "high_ns": 3589.913292688011
+      },
+      {
+        "id": "tree/mutate/replace/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 4421.864155291867,
+        "mean_ns": 4467.2258470089455,
+        "high_ns": 4517.5502868511185
+      },
+      {
+        "id": "tree/proof/generate_absence/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 255.026309656092,
+        "mean_ns": 262.4329623377445,
+        "high_ns": 269.5240297361097
+      },
+      {
+        "id": "tree/proof/generate_absence/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 329.8966820287602,
+        "mean_ns": 355.66386264351934,
+        "high_ns": 384.2258468687578
+      },
+      {
+        "id": "tree/proof/generate_membership/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 260.59419862418315,
+        "mean_ns": 262.91894519434175,
+        "high_ns": 266.58159890548
+      },
+      {
+        "id": "tree/proof/generate_membership/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 301.9541454745176,
+        "mean_ns": 304.0589198955203,
+        "high_ns": 306.1799023652465
+      },
+      {
+        "id": "tree/proof/verify_absence/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 3047.5540069413155,
+        "mean_ns": 3077.974041283014,
+        "high_ns": 3116.8627367450435
+      },
+      {
+        "id": "tree/proof/verify_absence/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 3903.3163456772163,
+        "mean_ns": 4005.4634931321098,
+        "high_ns": 4123.952700091954
+      },
+      {
+        "id": "tree/proof/verify_membership/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 2991.8054279463386,
+        "mean_ns": 3005.435572545185,
+        "high_ns": 3026.991847114701
+      },
+      {
+        "id": "tree/proof/verify_membership/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 4505.869263626042,
+        "mean_ns": 4716.820469972243,
+        "high_ns": 4948.120369038607
+      }
+    ]
+  },
+  "head": {
+    "commit": "9af52b83502be1eebb28a8befd8fce547effa36d",
+    "measured_at": "2026-11-11T07:15:18.650600+00:00",
+    "suite_hash": "dc43d3d88da757c1a0d37375995241528581892821bf042f361db1846c3148bd",
+    "toolchain": "rustc 1.97.0-nightly (d3cd04068 2026-05-16)",
+    "platform": "Linux-6.18.58.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "cpu": "AMD Ryzen 9 8940HX with Radeon Graphics",
+    "profile": "release; all features; 10 samples; 0.5s warm-up; 1s measurement; 95% confidence intervals",
+    "benchmarks": [
+      {
+        "id": "experimental/build/arena/1024",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 578053.9020162835,
+        "mean_ns": 581514.63401341,
+        "high_ns": 585110.1739956896
+      },
+      {
+        "id": "experimental/build/arena/16384",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 9849808.036017857,
+        "mean_ns": 9883870.23765873,
+        "high_ns": 9936450.428333335
+      },
+      {
+        "id": "experimental/build/arena/65536",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 41722121.1,
+        "mean_ns": 42269114.43333333,
+        "high_ns": 42708224.66666667
+      },
+      {
+        "id": "experimental/build/parallel/1024",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 604268.7496126984,
+        "mean_ns": 609701.3663460317,
+        "high_ns": 617276.3562126984
+      },
+      {
+        "id": "experimental/build/parallel/16384",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 4097762.116772487,
+        "mean_ns": 4165996.936997355,
+        "high_ns": 4221967.912870371
+      },
+      {
+        "id": "experimental/build/parallel/65536",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 8215106.849642858,
+        "mean_ns": 8304904.121865079,
+        "high_ns": 8393536.036839284
+      },
+      {
+        "id": "experimental/build/serial/1024",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 647285.1752173912,
+        "mean_ns": 661118.2583385094,
+        "high_ns": 677635.3197463767
+      },
+      {
+        "id": "experimental/build/serial/16384",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 9964408.515555557,
+        "mean_ns": 10060047.38361111,
+        "high_ns": 10176893.705833334
+      },
+      {
+        "id": "experimental/build/serial/65536",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 41800025.2,
+        "mean_ns": 42035903.7,
+        "high_ns": 42292196.661249995
+      },
+      {
+        "id": "experimental/operations/arena_get/1024",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 96.90444765572536,
+        "mean_ns": 97.16381073731904,
+        "high_ns": 97.52842254416551
+      },
+      {
+        "id": "experimental/operations/arena_get/16384",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 113.13592979500585,
+        "mean_ns": 113.57255734618688,
+        "high_ns": 113.88582657891696
+      },
+      {
+        "id": "experimental/operations/arena_replace/1024",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 3120.6047833794987,
+        "mean_ns": 3135.8222293518024,
+        "high_ns": 3155.976624484032
+      },
+      {
+        "id": "experimental/operations/arena_replace/16384",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 3929.824388834899,
+        "mean_ns": 3984.029926111034,
+        "high_ns": 4061.403198804124
+      },
+      {
+        "id": "experimental/operations/reference_get/1024",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 70.06148382317556,
+        "mean_ns": 70.1194424442075,
+        "high_ns": 70.201954157104
+      },
+      {
+        "id": "experimental/operations/reference_get/16384",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 79.98304971761132,
+        "mean_ns": 81.58833216529358,
+        "high_ns": 83.45796982424619
+      },
+      {
+        "id": "experimental/operations/reference_replace/1024",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 2951.104953925146,
+        "mean_ns": 2966.924594036399,
+        "high_ns": 2987.3064207286648
+      },
+      {
+        "id": "experimental/operations/reference_replace/16384",
+        "source_hash": "860b135d6f1e4707d35359c52fba3cb7f43cbfcb88bcfca3a1478ad3509fe6d8",
+        "low_ns": 3718.339490540779,
+        "mean_ns": 3726.1786631882424,
+        "high_ns": 3734.7430623843074
+      },
+      {
+        "id": "migration/artifacts/encode/128",
+        "source_hash": "7023718b5285206c7d00747458b064f5e89ef1b080c6b31b552148c1416f9e4f",
+        "low_ns": 486398.40203007526,
+        "mean_ns": 490700.6087562656,
+        "high_ns": 495838.40246240597
+      },
+      {
+        "id": "migration/artifacts/encode/2048",
+        "source_hash": "7023718b5285206c7d00747458b064f5e89ef1b080c6b31b552148c1416f9e4f",
+        "low_ns": 8749146.494444447,
+        "mean_ns": 8833912.92472222,
+        "high_ns": 8944344.17472222
+      },
+      {
+        "id": "migration/artifacts/restore_pbt_checkpoint/128",
+        "source_hash": "7023718b5285206c7d00747458b064f5e89ef1b080c6b31b552148c1416f9e4f",
+        "low_ns": 3015558.6956084655,
+        "mean_ns": 3020297.968247355,
+        "high_ns": 3026054.3357010586
+      },
+      {
+        "id": "migration/artifacts/restore_pbt_checkpoint/2048",
+        "source_hash": "7023718b5285206c7d00747458b064f5e89ef1b080c6b31b552148c1416f9e4f",
+        "low_ns": 53755619.505,
+        "mean_ns": 53926075.5,
+        "high_ns": 54105908.45
+      },
+      {
+        "id": "migration/artifacts/verify_mpt_anchor/128",
+        "source_hash": "7023718b5285206c7d00747458b064f5e89ef1b080c6b31b552148c1416f9e4f",
+        "low_ns": 4190358.7920999997,
+        "mean_ns": 4203716.085682539,
+        "high_ns": 4221187.549809524
+      },
+      {
+        "id": "migration/artifacts/verify_mpt_anchor/2048",
+        "source_hash": "7023718b5285206c7d00747458b064f5e89ef1b080c6b31b552148c1416f9e4f",
+        "low_ns": 71076646.53625001,
+        "mean_ns": 71176872.45,
+        "high_ns": 71281027.75
+      },
+      {
+        "id": "persistence/load/verified_cold_state_warm_db_cache/256",
+        "source_hash": "82f67b5ddf1d86c41f1cae1386dcfb0f4eaed445601e67f56e6344fd13cef42a",
+        "low_ns": 10727788.697401289,
+        "mean_ns": 10967367.789543651,
+        "high_ns": 11190801.725892857
+      },
+      {
+        "id": "persistence/load/verified_cold_state_warm_db_cache/4096",
+        "source_hash": "82f67b5ddf1d86c41f1cae1386dcfb0f4eaed445601e67f56e6344fd13cef42a",
+        "low_ns": 199219903.6,
+        "mean_ns": 200132671.1,
+        "high_ns": 201170525.6
+      },
+      {
+        "id": "persistence/save/sync_one_account_change/256",
+        "source_hash": "82f67b5ddf1d86c41f1cae1386dcfb0f4eaed445601e67f56e6344fd13cef42a",
+        "low_ns": 1889935.0014583333,
+        "mean_ns": 1939185.6827083335,
+        "high_ns": 1991478.0241666667
+      },
+      {
+        "id": "persistence/save/sync_one_account_change/4096",
+        "source_hash": "82f67b5ddf1d86c41f1cae1386dcfb0f4eaed445601e67f56e6344fd13cef42a",
+        "low_ns": 1992907.3725,
+        "mean_ns": 2146521.8,
+        "high_ns": 2306435.8
+      },
+      {
+        "id": "persistence/save/sync_unchanged/256",
+        "source_hash": "82f67b5ddf1d86c41f1cae1386dcfb0f4eaed445601e67f56e6344fd13cef42a",
+        "low_ns": 1616105.896527778,
+        "mean_ns": 1655721.9945403442,
+        "high_ns": 1697914.828614418
+      },
+      {
+        "id": "persistence/save/sync_unchanged/4096",
+        "source_hash": "82f67b5ddf1d86c41f1cae1386dcfb0f4eaed445601e67f56e6344fd13cef42a",
+        "low_ns": 1747683.8319805197,
+        "mean_ns": 1770397.9388492065,
+        "high_ns": 1796119.902662338
+      },
+      {
+        "id": "replay/authenticated_bal/1",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 19462.89022806005,
+        "mean_ns": 19683.896597795007,
+        "high_ns": 19890.187104503464
+      },
+      {
+        "id": "replay/authenticated_bal/256",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 4930926.667748016,
+        "mean_ns": 4944939.294414682,
+        "high_ns": 4957678.94170635
+      },
+      {
+        "id": "replay/authenticated_bal/64",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 1563925.5255952382,
+        "mean_ns": 1566817.7997619049,
+        "high_ns": 1570294.1394444448
+      },
+      {
+        "id": "replay/finalize_linear_chain/midpoint/1024",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 407303.6182999847,
+        "mean_ns": 409222.06772385014,
+        "high_ns": 412458.38983516477
+      },
+      {
+        "id": "replay/finalize_linear_chain/midpoint/128",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 29632.139774534644,
+        "mean_ns": 29975.24887231466,
+        "high_ns": 30228.78636801173
+      },
+      {
+        "id": "replay/finalize_linear_chain/midpoint/4096",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 1793263.5262,
+        "mean_ns": 1801447.7456111112,
+        "high_ns": 1814112.5037777778
+      },
+      {
+        "id": "replay/finalize_linear_chain/midpoint/512",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 166626.65211057774,
+        "mean_ns": 167225.58554830175,
+        "high_ns": 167816.12006144394
+      },
+      {
+        "id": "replay/finalize_linear_chain/same_anchor/1024",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 112.79353611475173,
+        "mean_ns": 116.40664178923353,
+        "high_ns": 119.85939493228484
+      },
+      {
+        "id": "replay/finalize_linear_chain/same_anchor/128",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 66.67777091906723,
+        "mean_ns": 69.09124473720152,
+        "high_ns": 71.81402102521393
+      },
+      {
+        "id": "replay/finalize_linear_chain/same_anchor/4096",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 160.8494503023432,
+        "mean_ns": 164.520604686319,
+        "high_ns": 169.07400793650794
+      },
+      {
+        "id": "replay/finalize_linear_chain/same_anchor/512",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 98.17850798367887,
+        "mean_ns": 101.69887344041133,
+        "high_ns": 105.41053350314867
+      },
+      {
+        "id": "replay/finalize_linear_chain/tip/1024",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 299410.1717924528,
+        "mean_ns": 300154.7041741539,
+        "high_ns": 301031.12925005617
+      },
+      {
+        "id": "replay/finalize_linear_chain/tip/128",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 28724.346610400262,
+        "mean_ns": 29029.81188499875,
+        "high_ns": 29294.01530469824
+      },
+      {
+        "id": "replay/finalize_linear_chain/tip/4096",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 1318041.9417454212,
+        "mean_ns": 1325111.7689835164,
+        "high_ns": 1334354.7600945511
+      },
+      {
+        "id": "replay/finalize_linear_chain/tip/512",
+        "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+        "low_ns": 129507.89715039318,
+        "mean_ns": 131756.50096111844,
+        "high_ns": 134982.96341431845
+      },
+      {
+        "id": "state/update/account_balance/128",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 4689.347861426139,
+        "mean_ns": 4701.8458108391915,
+        "high_ns": 4719.13642641597
+      },
+      {
+        "id": "state/update/account_balance/2048",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 6043.840926166796,
+        "mean_ns": 6082.263866427074,
+        "high_ns": 6128.578492028668
+      },
+      {
+        "id": "state/update/inline_storage_replace/128",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 4919.186901139913,
+        "mean_ns": 4936.949979818263,
+        "high_ns": 4959.924546402783
+      },
+      {
+        "id": "state/update/inline_storage_replace/2048",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 6338.876745439469,
+        "mean_ns": 6367.722215855248,
+        "high_ns": 6403.447802727434
+      },
+      {
+        "id": "state/update/overflow_storage_delete/128",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 3539.9002841398956,
+        "mean_ns": 3549.220156137413,
+        "high_ns": 3559.0246081622536
+      },
+      {
+        "id": "state/update/overflow_storage_delete/2048",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 5046.216401094409,
+        "mean_ns": 5179.218950150088,
+        "high_ns": 5305.240415075277
+      },
+      {
+        "id": "state/update/overflow_storage_replace/128",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 4525.483397993585,
+        "mean_ns": 4549.848093444824,
+        "high_ns": 4580.2784796643
+      },
+      {
+        "id": "state/update/overflow_storage_replace/2048",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 5914.61194811178,
+        "mean_ns": 5935.25979164467,
+        "high_ns": 5972.619952152183
+      },
+      {
+        "id": "state/update/remove_account_shared_code/128",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 22556.468040022137,
+        "mean_ns": 22729.534889295337,
+        "high_ns": 22933.255631401622
+      },
+      {
+        "id": "state/update/remove_account_shared_code/2048",
+        "source_hash": "6f99949bb8c92150dd0afd7f3f7dd30db7c72b7b88204ffbae40a624d30e3397",
+        "low_ns": 30154.56824004975,
+        "mean_ns": 30268.940708659084,
+        "high_ns": 30413.45860074627
+      },
+      {
+        "id": "tree/build/incremental_insert/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 3329838.8267063485,
+        "mean_ns": 3336315.4285383597,
+        "high_ns": 3346100.939417989
+      },
+      {
+        "id": "tree/build/incremental_insert/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 74016721.4,
+        "mean_ns": 74182956.95,
+        "high_ns": 74361683.8
+      },
+      {
+        "id": "tree/build/sorted/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 579646.6511261447,
+        "mean_ns": 580761.2343406595,
+        "high_ns": 582472.105540293
+      },
+      {
+        "id": "tree/build/sorted/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 10583435.66,
+        "mean_ns": 10605889.539583333,
+        "high_ns": 10629333.683302082
+      },
+      {
+        "id": "tree/mutate/remove/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 2462.544250334844,
+        "mean_ns": 2466.9196509503863,
+        "high_ns": 2472.908042654456
+      },
+      {
+        "id": "tree/mutate/remove/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 3560.898647594143,
+        "mean_ns": 3695.506038210356,
+        "high_ns": 3843.4770982416817
+      },
+      {
+        "id": "tree/mutate/replace/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 2987.320667153478,
+        "mean_ns": 2990.4404140021093,
+        "high_ns": 2993.533973490883
+      },
+      {
+        "id": "tree/mutate/replace/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 3722.1865430149965,
+        "mean_ns": 3890.762747291802,
+        "high_ns": 4067.8726067009143
+      },
+      {
+        "id": "tree/proof/generate_absence/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 274.07954831950656,
+        "mean_ns": 275.0460970137509,
+        "high_ns": 276.3589771358951
+      },
+      {
+        "id": "tree/proof/generate_absence/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 276.870568814488,
+        "mean_ns": 277.6370689008271,
+        "high_ns": 278.7884953952417
+      },
+      {
+        "id": "tree/proof/generate_membership/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 253.73223544734378,
+        "mean_ns": 254.27801711483727,
+        "high_ns": 254.9586393904192
+      },
+      {
+        "id": "tree/proof/generate_membership/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 272.48687267530397,
+        "mean_ns": 272.7020354201454,
+        "high_ns": 272.96458975415106
+      },
+      {
+        "id": "tree/proof/verify_absence/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 2342.07112017296,
+        "mean_ns": 2344.1650780042733,
+        "high_ns": 2345.98739360737
+      },
+      {
+        "id": "tree/proof/verify_absence/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 3257.451315561529,
+        "mean_ns": 3289.8821788630025,
+        "high_ns": 3348.6849136300275
+      },
+      {
+        "id": "tree/proof/verify_membership/1024",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 2584.0022990577154,
+        "mean_ns": 2587.872224056313,
+        "high_ns": 2591.3174259408834
+      },
+      {
+        "id": "tree/proof/verify_membership/16384",
+        "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+        "low_ns": 3261.999096696061,
+        "mean_ns": 3264.2139883263226,
+        "high_ns": 3266.761618402004
+      }
+    ]
+  },
+  "rechecks": [
+    {
+      "base": {
+        "commit": "4a83606edba6613336404237724cc5c70a0f0e7c",
+        "measured_at": "2026-11-11T07:22:22.225494+00:00",
+        "suite_hash": "f8af3bbe8e3b01acfd733b8269a25e381c53725bd376abf59ce700d7b9c1a8ba",
+        "toolchain": "rustc 1.97.0-nightly (d3cd04068 2026-05-16)",
+        "platform": "Linux-6.18.58.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+        "cpu": "AMD Ryzen 9 8940HX with Radeon Graphics",
+        "profile": "release; all features; 20 samples for proofs/BAL, 10 for finalization; 0.5s warm-up; 2s measurement; 95% confidence intervals",
+        "benchmarks": [
+          {
+            "id": "replay/authenticated_bal/256",
+            "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+            "low_ns": 10301730.265606806,
+            "mean_ns": 10393626.802525569,
+            "high_ns": 10492174.455245215
+          },
+          {
+            "id": "replay/authenticated_bal/64",
+            "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+            "low_ns": 2453958.191424695,
+            "mean_ns": 2458065.4107542937,
+            "high_ns": 2461622.9382166974
+          },
+          {
+            "id": "replay/finalize_linear_chain/midpoint/1024",
+            "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+            "low_ns": 363182.5451812771,
+            "mean_ns": 369092.9751204004,
+            "high_ns": 375840.44390151516
+          },
+          {
+            "id": "tree/proof/generate_membership/1024",
+            "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+            "low_ns": 281.4008625301399,
+            "mean_ns": 285.49697469076625,
+            "high_ns": 289.42519906154644
+          },
+          {
+            "id": "tree/proof/generate_membership/16384",
+            "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+            "low_ns": 267.41682591858245,
+            "mean_ns": 268.21802386392983,
+            "high_ns": 269.0530668756505
+          }
+        ]
+      },
+      "head": {
+        "commit": "9af52b83502be1eebb28a8befd8fce547effa36d",
+        "measured_at": "2026-11-11T07:22:27.794615+00:00",
+        "suite_hash": "dc43d3d88da757c1a0d37375995241528581892821bf042f361db1846c3148bd",
+        "toolchain": "rustc 1.97.0-nightly (d3cd04068 2026-05-16)",
+        "platform": "Linux-6.18.58.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+        "cpu": "AMD Ryzen 9 8940HX with Radeon Graphics",
+        "profile": "release; all features; 20 samples for proofs/BAL, 10 for finalization; 0.5s warm-up; 2s measurement; 95% confidence intervals",
+        "benchmarks": [
+          {
+            "id": "replay/authenticated_bal/256",
+            "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+            "low_ns": 4975184.200800722,
+            "mean_ns": 4985852.516168326,
+            "high_ns": 4996528.4984985655
+          },
+          {
+            "id": "replay/authenticated_bal/64",
+            "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+            "low_ns": 1590280.616647108,
+            "mean_ns": 1596288.9663720534,
+            "high_ns": 1602066.0074466108
+          },
+          {
+            "id": "replay/finalize_linear_chain/midpoint/1024",
+            "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+            "low_ns": 376353.5834523809,
+            "mean_ns": 377981.76131235826,
+            "high_ns": 380085.430005669
+          },
+          {
+            "id": "tree/proof/generate_membership/1024",
+            "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+            "low_ns": 250.73633038243693,
+            "mean_ns": 251.97221408994557,
+            "high_ns": 253.3443000521987
+          },
+          {
+            "id": "tree/proof/generate_membership/16384",
+            "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+            "low_ns": 259.89593567059393,
+            "mean_ns": 260.5762100565088,
+            "high_ns": 261.2997080087404
+          }
+        ]
+      }
+    },
+    {
+      "base": {
+        "commit": "4a83606edba6613336404237724cc5c70a0f0e7c",
+        "measured_at": "2026-11-11T07:22:31.026333+00:00",
+        "suite_hash": "f8af3bbe8e3b01acfd733b8269a25e381c53725bd376abf59ce700d7b9c1a8ba",
+        "toolchain": "rustc 1.97.0-nightly (d3cd04068 2026-05-16)",
+        "platform": "Linux-6.18.58.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+        "cpu": "AMD Ryzen 9 8940HX with Radeon Graphics",
+        "profile": "release; all features; 20 samples for proofs/BAL, 10 for finalization; 0.5s warm-up; 2s measurement; 95% confidence intervals",
+        "benchmarks": [
+          {
+            "id": "replay/authenticated_bal/256",
+            "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+            "low_ns": 9799472.6508639,
+            "mean_ns": 9833138.059055429,
+            "high_ns": 9871687.354486408
+          },
+          {
+            "id": "replay/authenticated_bal/64",
+            "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+            "low_ns": 2274659.4877319424,
+            "mean_ns": 2278464.691716069,
+            "high_ns": 2283332.516313492
+          },
+          {
+            "id": "replay/finalize_linear_chain/midpoint/1024",
+            "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+            "low_ns": 402832.6265486111,
+            "mean_ns": 403747.09018849203,
+            "high_ns": 404736.60331547615
+          },
+          {
+            "id": "tree/proof/generate_membership/1024",
+            "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+            "low_ns": 252.6341901834548,
+            "mean_ns": 253.50525040613198,
+            "high_ns": 254.418344838954
+          },
+          {
+            "id": "tree/proof/generate_membership/16384",
+            "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+            "low_ns": 243.4207623630774,
+            "mean_ns": 244.0606751187368,
+            "high_ns": 244.60666453807767
+          }
+        ]
+      },
+      "head": {
+        "commit": "9af52b83502be1eebb28a8befd8fce547effa36d",
+        "measured_at": "2026-11-11T07:22:34.164305+00:00",
+        "suite_hash": "dc43d3d88da757c1a0d37375995241528581892821bf042f361db1846c3148bd",
+        "toolchain": "rustc 1.97.0-nightly (d3cd04068 2026-05-16)",
+        "platform": "Linux-6.18.58.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+        "cpu": "AMD Ryzen 9 8940HX with Radeon Graphics",
+        "profile": "release; all features; 20 samples for proofs/BAL, 10 for finalization; 0.5s warm-up; 2s measurement; 95% confidence intervals",
+        "benchmarks": [
+          {
+            "id": "replay/authenticated_bal/256",
+            "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+            "low_ns": 5288112.526019881,
+            "mean_ns": 5312232.695904581,
+            "high_ns": 5344713.3610976925
+          },
+          {
+            "id": "replay/authenticated_bal/64",
+            "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+            "low_ns": 1683417.605029684,
+            "mean_ns": 1687392.1790839217,
+            "high_ns": 1692519.843488672
+          },
+          {
+            "id": "replay/finalize_linear_chain/midpoint/1024",
+            "source_hash": "7b9d6be8ba9b38d6e15ac45e8df6f689e4f43391eb1c9b555ba5f5672b8b1547",
+            "low_ns": 361072.1855426356,
+            "mean_ns": 362322.60410114436,
+            "high_ns": 363378.1941342286
+          },
+          {
+            "id": "tree/proof/generate_membership/1024",
+            "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+            "low_ns": 246.23053302612183,
+            "mean_ns": 246.73272542266096,
+            "high_ns": 247.31761753215
+          },
+          {
+            "id": "tree/proof/generate_membership/16384",
+            "source_hash": "bb63532faacda8de0583f6d321d795becee3ec669cbdf58bf5e867e7ccda5248",
+            "low_ns": 259.8607861555952,
+            "mean_ns": 264.6029844336735,
+            "high_ns": 269.317003856198
+          }
+        ]
+      }
+    }
+  ]
+}
