@@ -384,6 +384,19 @@ impl<H: TreeHasher> StateTree<H> {
             self.metadata.code_sizes.get_max().map_or(0, |(size, _)| *size),
         )
     }
+
+    /// Estimates resident bytes for cache budgeting without scanning the state.
+    ///
+    /// Counts shared nodes and code in each snapshot independently, so summing
+    /// snapshots deliberately overcounts sharing. This is not allocator telemetry.
+    #[cfg(feature = "persistence")]
+    pub fn estimated_memory_size(&self) -> usize {
+        self.tree
+            .len()
+            .saturating_mul(512)
+            .saturating_add(self.accounts.len().saturating_mul(512))
+            .saturating_add(usize::try_from(self.metadata.total_code_bytes).unwrap_or(usize::MAX))
+    }
 }
 
 /// One ordered account or storage transition in an atomic state batch.

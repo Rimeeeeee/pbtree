@@ -47,6 +47,26 @@ Native database users must serialize composite operations with
 own block references afterwards, and remove references before unregistering roots
 or collecting nodes. The database directory must already exist.
 
+`NodeDatabase::pin_roots` returns a lease that prevents root removal across handles
+without holding `mutation`. Release the mutation lock before acquiring a client
+database writer. Clients must preserve external block references and marker files
+for pinned roots too. `generation` and `invalidate_caches` coordinate client caches
+when references or roots are removed.
+
+`collect_cooperatively` marks without blocking checkpoint writers and yields between
+bounded sweep batches. Saves during a sweep repair and mark reused subtrees before
+publishing a root. Interrupted sweeps recover before the next ordinary save.
+
+`NodeDatabase::proof` reads and authenticates a single native search path while a
+mutation guard or root lease protects it. It avoids full-state reconstruction.
+Native persistence benchmarks include these path reads. `load` still reconstructs
+the complete in-memory state.
+
+Keep `DecodeLimits::default()` for untrusted migration artifacts. Locally executed
+native state can use `DecodeLimits::native()` independently, allowing valid chain
+growth beyond import budgets. `StateTree::estimated_memory_size` supports cache
+budgets without scanning accounts or storage.
+
 ```sh
 cargo test -p pbt
 cargo test -p pbt --all-features

@@ -134,5 +134,25 @@ fn loads(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, saves, loads);
+fn proofs(c: &mut Criterion) {
+    let mut group = c.benchmark_group("persistence/proof");
+    group.throughput(Throughput::Elements(1));
+    for size in SIZES {
+        let state = populated_state(size);
+        let root = state.root();
+        let key = pbt::key::storage_key::<Blake3Hasher>(address(size / 2), U256::from(256));
+        let expected = state.tree().proof(&key);
+        let fixture = Fixture::new(&state);
+        drop(state);
+        let database = &fixture.database;
+        let _mutation = database.mutation.lock().unwrap();
+        assert_eq!(database.proof::<Blake3Hasher>(root, &key).unwrap(), expected);
+        group.bench_function(BenchmarkId::new("native_path_warm_db_cache", size), |b| {
+            b.iter(|| database.proof::<Blake3Hasher>(black_box(root), black_box(&key)).unwrap());
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, saves, loads, proofs);
 criterion_main!(benches);

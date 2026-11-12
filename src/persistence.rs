@@ -1,18 +1,21 @@
 //! Content-addressed trie nodes shared by durable fork checkpoints.
 
 use crate::{
-    StateTree, TreeHasher,
+    Proof, ProofStep, ProofTerminal, StateTree, TreeHasher,
     hash::{branch_hash, leaf_hash},
     key::{self, ACCOUNT_KEY_LENGTH, CODE_HASH_LEAF_KEY, DELEGATION_LEAF_KEY, STORAGE_KEY_LENGTH},
     migration::{ArtifactError, DecodeLimits, Reader, restore_leaves},
-    tree::Node,
+    tree::{Node, bit, matches_prefix, validate_key},
 };
 use alloy_primitives::{Address, B256, U256};
 use rocksdb::{DB, Options, WriteBatch, WriteOptions};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
 };
 
 pub use rocksdb;
@@ -27,6 +30,10 @@ pub struct NodeDatabase {
     /// Serializes checkpoint publication, reads, root removal, and garbage collection.
     /// Hold this lock across composite operations that publish external block references.
     pub mutation: Mutex<()>,
+    generation: AtomicU64,
+    pins: Mutex<BTreeMap<B256, usize>>,
+    collecting: AtomicBool,
+    restoration: Mutex<()>,
 }
 
 impl NodeDatabase {
@@ -62,7 +69,14 @@ impl NodeDatabase {
                 write(&db, batch)?;
             }
         }
-        let database = Arc::new(Self { db, mutation: Mutex::default() });
+        let database = Arc::new(Self {
+            db,
+            mutation: Mutex::default(),
+            generation: AtomicU64::new(0),
+            pins: Mutex::default(),
+            collecting: AtomicBool::new(false),
+            restoration: Mutex::default(),
+        });
         databases.insert(path, Arc::downgrade(&database));
         Ok(database)
     }
@@ -103,15 +117,20 @@ impl NodeDatabase {
         }
         // A partial sweep can leave an unregistered parent after deleting its children.
         // Finish collection before save can mistake that parent for a complete subtree.
-        if self.db.get(GC_PENDING)?.is_some() {
+        let mut sweeping = self.db.get(GC_PENDING)?.is_some();
+        if sweeping && !self.collecting.load(Ordering::Acquire) {
             self.collect::<H>()?;
+            sweeping = false;
         }
         let mut stack: Vec<_> =
             state.tree().root.as_deref().map(|node| (node, false)).into_iter().collect();
         let mut batch = WriteBatch::default();
         while let Some((node, expanded)) = stack.pop() {
             let hash = node.hash();
-            if !expanded && self.db.get_pinned(database_key(NODE, hash))?.is_some() {
+            if !expanded
+                && self.db.get_pinned(database_key(NODE, hash))?.is_some()
+                && (!sweeping || self.db.get_pinned(database_key(MARK, hash))?.is_some())
+            {
                 continue;
             }
             // Publish children before parents so a cancelled multi-batch save can be retried.
@@ -166,6 +185,12 @@ impl NodeDatabase {
                 }
             }
             batch.put(database_key(NODE, hash), encoded);
+            // During a cooperative sweep, publish only complete, marked subtrees.
+            // Unmarked existing parents may already have lost children; rebuild
+            // them from the caller's immutable state rather than trusting existence.
+            if sweeping {
+                batch.put(database_key(MARK, hash), []);
+            }
             if batch.size_in_bytes() >= WRITE_BATCH_BYTES {
                 write(&self.db, batch)?;
                 batch = WriteBatch::default();
@@ -182,13 +207,18 @@ impl NodeDatabase {
     }
 
     /// Authenticates native nodes and reconstructs the complete in-memory state.
-    /// Hold `mutation` while loading. Missing/corrupt nodes or exhausted limits are errors.
+    /// Hold `mutation` or a root lease while loading. Missing/corrupt nodes or exhausted limits are
+    /// errors.
     pub fn load<H: TreeHasher>(
         &self,
         root: B256,
         count: usize,
         limits: DecodeLimits,
     ) -> Result<StateTree<H>, NodeError> {
+        // Bound full-state reconstruction memory independently of checkpoint writes.
+        // This lock never acquires `mutation`; callers may instead protect reads
+        // with a root lease and leave writers free to publish unrelated states.
+        let _restoration = self.restoration.lock().map_err(|_| NodeError::Poisoned)?;
         if count > limits.max_leaves {
             return Err(ArtifactError::ResourceLimit.into());
         }
@@ -232,9 +262,10 @@ impl NodeDatabase {
                             }
                         }
                     }
-                    StoredNode::Branch { bits, left, right } => {
-                        let depth =
-                            depth.checked_add(bits + 1).ok_or(ArtifactError::ResourceLimit)?;
+                    StoredNode::Branch { prefix, left, right } => {
+                        let depth = depth
+                            .checked_add(prefix.len() + 1)
+                            .ok_or(ArtifactError::ResourceLimit)?;
                         stack.push((right, depth));
                         stack.push((left, depth));
                     }
@@ -311,7 +342,7 @@ impl NodeDatabase {
                 {
                     return Err(ArtifactError::Invalid("invalid PBT branch hash").into());
                 }
-                StoredNode::Branch { bits: length, left, right }
+                StoredNode::Branch { prefix, left, right }
             }
             _ => return Err(ArtifactError::Invalid("invalid PBT node tag").into()),
         };
@@ -324,6 +355,10 @@ impl NodeDatabase {
     /// Destructively unregisters a root after external references have been removed.
     /// Hold `mutation`; shared nodes are retained until `collect` runs.
     pub fn remove_root(&self, root: B256) -> Result<(), NodeError> {
+        if self.is_pinned(root)? {
+            return Err(ArtifactError::Invalid("PBT root is pinned").into());
+        }
+        self.invalidate_caches();
         let mut batch = WriteBatch::default();
         batch.delete(database_key(ROOT, root));
         write(&self.db, batch)
@@ -334,7 +369,104 @@ impl NodeDatabase {
     /// A corrupt retained node fails marking before the sweep begins.
     /// An interrupted sweep is completed before the next save can register a root.
     pub fn collect<H: TreeHasher>(&self) -> Result<(), NodeError> {
+        let _collection = self
+            .begin_collection()
+            .ok_or(ArtifactError::Invalid("PBT collection already running"))?;
         self.collect_with::<H>(WRITE_BATCH_BYTES, || Ok(()))
+    }
+
+    /// Reclaims unreachable nodes while allowing checkpoint writers to progress.
+    ///
+    /// Do not hold `mutation` when calling. Marking runs without it; a short write
+    /// barrier marks roots published during marking. Sweeping takes the lock only
+    /// for bounded batches and rechecks marks before deletion. Concurrent saves
+    /// repair and mark reused subtrees before publishing their roots. Returns false
+    /// if another collection is active. Unreferenced nodes allocated during a sweep
+    /// may survive until the next pass. Failed sweeps remain recoverable on reopen.
+    pub fn collect_cooperatively<H: TreeHasher>(&self) -> Result<bool, NodeError> {
+        self.collect_cooperatively_with::<H>(GC_SWEEP_NODES, |_| Ok(()))
+    }
+
+    fn collect_cooperatively_with<H: TreeHasher>(
+        &self,
+        sweep_nodes: usize,
+        mut checkpoint: impl FnMut(CollectionPhase) -> Result<(), NodeError>,
+    ) -> Result<bool, NodeError> {
+        let writer = self.mutation.lock().map_err(|_| NodeError::Poisoned)?;
+        let Some(_collection) = self.begin_collection() else { return Ok(false) };
+        if self.db.get(GC_PENDING)?.is_some() {
+            self.collect_with::<H>(WRITE_BATCH_BYTES, || Ok(()))?;
+        }
+        drop(writer);
+        // No sweeper is active yet and saves do not add marks before GC_PENDING.
+        self.delete_prefix(MARK)?;
+        let roots = {
+            let _writer = self.mutation.lock().map_err(|_| NodeError::Poisoned)?;
+            self.roots().collect::<Result<Vec<_>, _>>()?
+        };
+        for root in roots {
+            self.mark_tree::<H>(root, GC_MARK_BYTES)?;
+        }
+        checkpoint(CollectionPhase::Marked)?;
+        {
+            let _writer = self.mutation.lock().map_err(|_| NodeError::Poisoned)?;
+            // Root publication is serialized with this barrier. Existing marked
+            // subtrees make catching up to newly published roots incremental.
+            for root in self.roots() {
+                self.mark_tree::<H>(root?, GC_MARK_BYTES)?;
+            }
+            let mut batch = WriteBatch::default();
+            batch.put(GC_PENDING, []);
+            write(&self.db, batch)?;
+        }
+        let mut candidates = Vec::with_capacity(sweep_nodes);
+        for hash in self.hashes(NODE) {
+            candidates.push(hash?);
+            if candidates.len() >= sweep_nodes {
+                self.sweep_cooperative_batch(&candidates)?;
+                candidates.clear();
+                checkpoint(CollectionPhase::Swept)?;
+                std::thread::yield_now();
+            }
+        }
+        if !candidates.is_empty() {
+            self.sweep_cooperative_batch(&candidates)?;
+            checkpoint(CollectionPhase::Swept)?;
+        }
+        {
+            let _writer = self.mutation.lock().map_err(|_| NodeError::Poisoned)?;
+            // Every remaining parent now has complete children, including nodes
+            // published during the sweep. Disable the save barrier before clearing
+            // marks, so concurrent saves cannot mistake cleared marks for holes.
+            let mut batch = WriteBatch::default();
+            batch.delete(GC_PENDING);
+            write(&self.db, batch)?;
+        }
+        self.delete_prefix(MARK)?;
+        Ok(true)
+    }
+
+    fn sweep_cooperative_batch(&self, candidates: &[B256]) -> Result<(), NodeError> {
+        let _writer = self.mutation.lock().map_err(|_| NodeError::Poisoned)?;
+        let mut batch = WriteBatch::default();
+        for hash in candidates {
+            // A save may have repaired and marked this hash since iteration began.
+            if self.db.get_pinned(database_key(MARK, *hash))?.is_none() {
+                batch.delete(database_key(NODE, *hash));
+            }
+        }
+        write(&self.db, batch)
+    }
+
+    fn begin_collection(&self) -> Option<CollectionGuard<'_>> {
+        if self
+            .collecting
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return None;
+        }
+        Some(CollectionGuard(&self.collecting))
     }
 
     fn collect_with<H: TreeHasher>(
@@ -344,30 +476,7 @@ impl NodeDatabase {
     ) -> Result<(), NodeError> {
         self.delete_prefix(MARK)?;
         for root in self.hashes(ROOT) {
-            let root = root?;
-            let mut stack = Vec::new();
-            if !root.is_zero() {
-                stack.push((root, 0usize));
-            }
-            let mut batch = WriteBatch::default();
-            while let Some((hash, depth)) = stack.pop() {
-                if depth > STORAGE_KEY_LENGTH * 8 {
-                    return Err(ArtifactError::Invalid("invalid PBT node depth").into());
-                }
-                if self.db.get_pinned(database_key(MARK, hash))?.is_some() {
-                    continue;
-                }
-                if let StoredNode::Branch { bits, left, right } = self.node::<H>(hash)? {
-                    stack.push((right, depth + bits + 1));
-                    stack.push((left, depth + bits + 1));
-                }
-                batch.put(database_key(MARK, hash), []);
-                if batch.size_in_bytes() >= WRITE_BATCH_BYTES {
-                    write(&self.db, batch)?;
-                    batch = WriteBatch::default();
-                }
-            }
-            write(&self.db, batch)?;
+            self.mark_tree::<H>(root?, WRITE_BATCH_BYTES)?;
         }
         // Persist this before the first deletion and keep it until every sweep batch
         // and marker cleanup has reached the WAL, including across process restarts.
@@ -393,6 +502,33 @@ impl NodeDatabase {
         write(&self.db, batch)
     }
 
+    fn mark_tree<H: TreeHasher>(&self, root: B256, batch_bytes: usize) -> Result<(), NodeError> {
+        let mut stack = Vec::new();
+        if !root.is_zero() {
+            stack.push((root, 0usize));
+        }
+        let mut batch = WriteBatch::default();
+        while let Some((hash, depth)) = stack.pop() {
+            if depth > STORAGE_KEY_LENGTH * 8 {
+                return Err(ArtifactError::Invalid("invalid PBT node depth").into());
+            }
+            if self.db.get_pinned(database_key(MARK, hash))?.is_some() {
+                continue;
+            }
+            if let StoredNode::Branch { prefix, left, right } = self.node::<H>(hash)? {
+                stack.push((right, depth + prefix.len() + 1));
+                stack.push((left, depth + prefix.len() + 1));
+            }
+            batch.put(database_key(MARK, hash), []);
+            if batch.size_in_bytes() >= batch_bytes {
+                write(&self.db, batch)?;
+                batch = WriteBatch::default();
+            }
+        }
+        write(&self.db, batch)?;
+        Ok(())
+    }
+
     fn delete_prefix(&self, prefix: u8) -> Result<(), NodeError> {
         let mut batch = WriteBatch::default();
         for hash in self.hashes(prefix) {
@@ -409,6 +545,95 @@ impl NodeDatabase {
     /// Hold `mutation` when this result participates in checkpoint publication.
     pub fn has_roots(&self) -> Result<bool, NodeError> {
         Ok(self.hashes(ROOT).next().transpose()?.is_some())
+    }
+
+    /// Returns registered roots without materializing their states. Hold `mutation`
+    /// when using the iterator to select roots for destructive collection.
+    pub fn roots(&self) -> impl Iterator<Item = Result<B256, NodeError>> + '_ {
+        self.hashes(ROOT)
+    }
+
+    /// Returns the process-local invalidation generation shared by all database handles.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    /// Invalidates client caches before removing external references or roots.
+    /// Hold `mutation` until removal completes; readers missing their cache must take it.
+    pub fn invalidate_caches(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Pins registered roots while a client verifies or commits an external reference.
+    /// Hold `mutation` while acquiring the lease, then release it before taking another
+    /// database's writer lock. Removal fails until every lease for a root is dropped.
+    pub fn pin_roots(self: &Arc<Self>, roots: &[B256]) -> Result<RootLease, NodeError> {
+        let mut pins = self.pins.lock().map_err(|_| NodeError::Poisoned)?;
+        for root in roots {
+            self.leaf_count(*root)?.ok_or(ArtifactError::Invalid("unregistered PBT root"))?;
+            if pins.get(root) == Some(&usize::MAX) {
+                return Err(ArtifactError::ResourceLimit.into());
+            }
+        }
+        let mut roots = roots.to_vec();
+        roots.sort_unstable();
+        roots.dedup();
+        for root in &roots {
+            *pins.entry(*root).or_default() += 1;
+        }
+        Ok(RootLease { database: self.clone(), roots })
+    }
+
+    /// Reports whether a process-local lease protects a root. Hold `mutation` when
+    /// using this result to remove external references or checkpoint marker files.
+    pub fn is_pinned(&self, root: B256) -> Result<bool, NodeError> {
+        Ok(self.pins.lock().map_err(|_| NodeError::Poisoned)?.contains_key(&root))
+    }
+
+    /// Reads and authenticates only the nodes on a key's search path.
+    ///
+    /// Hold `mutation` or a root lease to prevent removal or collection. The root must
+    /// be registered. Unlike `load`, this does not reconstruct account/code/storage
+    /// metadata or allocate memory proportional to the complete state.
+    pub fn proof<H: TreeHasher>(&self, root: B256, key: &[u8]) -> Result<Proof, NodeError> {
+        validate_key(key).map_err(|_| ArtifactError::Invalid("invalid PBT proof key"))?;
+        self.leaf_count(root)?.ok_or(ArtifactError::Invalid("unregistered PBT root"))?;
+        let mut steps = Vec::new();
+        let mut hash = root;
+        let mut depth = 0;
+        let terminal = loop {
+            if hash.is_zero() {
+                break ProofTerminal::Empty;
+            }
+            if depth > STORAGE_KEY_LENGTH * 8 {
+                return Err(ArtifactError::Invalid("invalid PBT node depth").into());
+            }
+            match self.node::<H>(hash)? {
+                StoredNode::Leaf { key, value, .. } => break ProofTerminal::Leaf { key, value },
+                StoredNode::Branch { prefix, left, right } => {
+                    if !matches_prefix(key, depth, &prefix)
+                        || bit(key, depth + prefix.len()).is_none()
+                    {
+                        break ProofTerminal::Branch { prefix, left, right };
+                    }
+                    depth += prefix.len();
+                    let rightward =
+                        bit(key, depth).ok_or(ArtifactError::Invalid("invalid PBT proof path"))?;
+                    depth += 1;
+                    hash = if rightward { right } else { left };
+                    steps.push(ProofStep {
+                        prefix,
+                        right: rightward,
+                        sibling: if rightward { left } else { right },
+                    });
+                }
+            }
+        };
+        let proof = Proof { steps, terminal };
+        proof
+            .verify::<H>(root, key)
+            .map_err(|_| ArtifactError::Invalid("invalid PBT proof path"))?;
+        Ok(proof)
     }
 
     fn hashes(&self, prefix: u8) -> impl Iterator<Item = Result<B256, NodeError>> + '_ {
@@ -439,6 +664,45 @@ impl NodeDatabase {
     }
 }
 
+/// Keeps registered roots and their native nodes alive without holding a database
+/// mutation lock. Dropping the lease releases pins; it does not unregister roots.
+#[derive(Debug)]
+#[must_use = "keep the lease alive until external references are committed"]
+pub struct RootLease {
+    database: Arc<NodeDatabase>,
+    roots: Vec<B256>,
+}
+
+#[derive(Debug)]
+struct CollectionGuard<'a>(&'a AtomicBool);
+
+impl Drop for CollectionGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CollectionPhase {
+    Marked,
+    Swept,
+}
+
+impl Drop for RootLease {
+    fn drop(&mut self) {
+        // Release pins even after a client panic; drop cannot report a poisoned lock.
+        let mut pins = self.database.pins.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for root in &self.roots {
+            if let Some(count) = pins.get_mut(root) {
+                *count -= 1;
+                if *count == 0 {
+                    pins.remove(root);
+                }
+            }
+        }
+    }
+}
+
 /// A native trie database, directory, or state-authentication operation failed.
 #[derive(Debug, thiserror::Error)]
 pub enum NodeError {
@@ -456,14 +720,14 @@ pub enum NodeError {
         /// Underlying filesystem error.
         source: std::io::Error,
     },
-    /// A panicking writer poisoned the process-local database registry.
+    /// A panicking native operation poisoned a process-local lock.
     #[error("PBT native database lock poisoned")]
     Poisoned,
 }
 
 enum StoredNode {
     Leaf { key: Vec<u8>, value: B256, preimage: Option<Vec<u8>> },
-    Branch { bits: usize, left: B256, right: B256 },
+    Branch { prefix: Vec<bool>, left: B256, right: B256 },
 }
 
 /// Version of the native RocksDB node/marker format, distinct from artifact encoding.
@@ -476,6 +740,8 @@ const GC_PENDING: &[u8] = b"pending_gc";
 const LEAF: u8 = 0;
 const BRANCH: u8 = 1;
 const WRITE_BATCH_BYTES: usize = 8 * 1024 * 1024;
+const GC_MARK_BYTES: usize = 1024 * 1024;
+const GC_SWEEP_NODES: usize = 1024;
 const MAX_NODE_BYTES: usize = 3 + STORAGE_KEY_LENGTH + 64;
 
 fn database_key(prefix: u8, hash: B256) -> [u8; 33] {
@@ -679,6 +945,225 @@ mod tests {
             NodeDatabase::open(directory.path()),
             Err(NodeError::Artifact(ArtifactError::Invalid("unsupported PBT database version")))
         ));
+    }
+
+    #[test]
+    fn native_proofs_match_memory_without_loading_unrelated_subtrees() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = NodeDatabase::open(directory.path()).unwrap();
+        let mut state = StateTree::<Blake3Hasher>::new();
+        for byte in 1..=8 {
+            let address = Address::repeat_byte(byte);
+            state.set_account(address, AccountData { nonce: 1, ..Default::default() }).unwrap();
+            state.set_storage(address, U256::MAX, B256::repeat_byte(byte)).unwrap();
+        }
+        database.save(&state, DecodeLimits::native()).unwrap();
+        for (key, value) in state.tree().entries() {
+            let proof = database.proof::<Blake3Hasher>(state.root(), key).unwrap();
+            assert_eq!(proof, state.tree().proof(key));
+            assert_eq!(proof.verify::<Blake3Hasher>(state.root(), key), Ok(Some(value)));
+        }
+        for key in [vec![0], key::storage_key::<Blake3Hasher>(Address::ZERO, U256::MAX)] {
+            assert_eq!(
+                database.proof::<Blake3Hasher>(state.root(), &key).unwrap(),
+                state.tree().proof(&key)
+            );
+        }
+        // A path-local proof must not fetch the sibling subtree.
+        let StoredNode::Branch { left, right, .. } =
+            database.node::<Blake3Hasher>(state.root()).unwrap()
+        else {
+            panic!("expected branch")
+        };
+        let (key, _) = state.tree().entries().next().unwrap();
+        let proof = state.tree().proof(key);
+        let sibling = proof.steps[0].sibling;
+        assert!(sibling == left || sibling == right);
+        database.db.delete(database_key(NODE, sibling)).unwrap();
+        assert_eq!(database.proof::<Blake3Hasher>(state.root(), key).unwrap(), proof);
+        assert!(matches!(
+            database.proof::<Blake3Hasher>(state.root(), &[]),
+            Err(NodeError::Artifact(ArtifactError::Invalid("invalid PBT proof key")))
+        ));
+        assert!(matches!(
+            database.proof::<Blake3Hasher>(B256::repeat_byte(0xff), key),
+            Err(NodeError::Artifact(ArtifactError::Invalid("unregistered PBT root")))
+        ));
+        let empty = StateTree::<Blake3Hasher>::new();
+        database.save(&empty, DecodeLimits::native()).unwrap();
+        assert_eq!(
+            database.proof::<Blake3Hasher>(empty.root(), key).unwrap().terminal,
+            ProofTerminal::Empty
+        );
+    }
+
+    #[test]
+    fn root_removal_invalidates_every_handle_and_native_budgets_are_independent() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = NodeDatabase::open(directory.path()).unwrap();
+        let other = NodeDatabase::open(directory.path()).unwrap();
+        let mut state = StateTree::<Blake3Hasher>::new();
+        state.set_account(Address::ZERO, AccountData { nonce: 1, ..Default::default() }).unwrap();
+        let tight = DecodeLimits { max_accounts: 0, ..Default::default() };
+        assert!(matches!(
+            database.save(&state, tight),
+            Err(NodeError::Artifact(ArtifactError::ResourceLimit))
+        ));
+        database.save(&state, DecodeLimits::native()).unwrap();
+        assert_eq!(database.roots().collect::<Result<Vec<_>, _>>().unwrap(), vec![state.root()]);
+        let generation = other.generation();
+        database.remove_root(state.root()).unwrap();
+        assert_ne!(other.generation(), generation);
+        assert_eq!(other.leaf_count(state.root()).unwrap(), None);
+        assert_eq!(
+            database
+                .load::<Blake3Hasher>(state.root(), state.tree().len(), DecodeLimits::native())
+                .unwrap()
+                .root(),
+            state.root()
+        );
+    }
+
+    #[test]
+    fn leases_protect_roots_across_handles_without_holding_mutation() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = NodeDatabase::open(directory.path()).unwrap();
+        let other = NodeDatabase::open(directory.path()).unwrap();
+        let mut state = StateTree::<Blake3Hasher>::new();
+        state.set_account(Address::ZERO, AccountData { nonce: 1, ..Default::default() }).unwrap();
+        let (first, second) = {
+            let _mutation = database.mutation.lock().unwrap();
+            database.save(&state, DecodeLimits::native()).unwrap();
+            assert!(matches!(
+                database.pin_roots(&[state.root(), B256::repeat_byte(9)]),
+                Err(NodeError::Artifact(ArtifactError::Invalid("unregistered PBT root")))
+            ));
+            assert!(!database.is_pinned(state.root()).unwrap());
+            (
+                database.pin_roots(&[state.root(), state.root()]).unwrap(),
+                other.pin_roots(&[state.root()]).unwrap(),
+            )
+        };
+        assert!(other.mutation.try_lock().is_ok());
+        assert!(matches!(
+            other.remove_root(state.root()),
+            Err(NodeError::Artifact(ArtifactError::Invalid("PBT root is pinned")))
+        ));
+        other.collect::<Blake3Hasher>().unwrap();
+        let (key, _) = state.tree().entries().next().unwrap();
+        assert_eq!(
+            other.proof::<Blake3Hasher>(state.root(), key).unwrap(),
+            state.tree().proof(key)
+        );
+        drop(first);
+        assert!(other.is_pinned(state.root()).unwrap());
+        drop(second);
+        assert!(!other.is_pinned(state.root()).unwrap());
+        other.remove_root(state.root()).unwrap();
+    }
+
+    #[test]
+    fn cooperative_sweeps_preserve_new_roots_and_repair_partly_swept_subtrees() {
+        for interrupt in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let database = NodeDatabase::open(directory.path()).unwrap();
+            let limits = DecodeLimits::default();
+            let mut retained = StateTree::<Blake3Hasher>::new();
+            retained
+                .set_account(
+                    Address::repeat_byte(2),
+                    AccountData { nonce: 1, ..Default::default() },
+                )
+                .unwrap();
+            let address = Address::repeat_byte(1);
+            let mut orphan = StateTree::<Blake3Hasher>::new();
+            orphan.set_account(address, AccountData { nonce: 1, ..Default::default() }).unwrap();
+            for slot in 64..192 {
+                orphan.set_storage(address, U256::from(slot), B256::repeat_byte(1)).unwrap();
+            }
+            for nonce in 1..1024 {
+                orphan.set_account(address, AccountData { nonce, ..Default::default() }).unwrap();
+                if orphan.root()[0] >= 0xf8 {
+                    break;
+                }
+            }
+            assert!(orphan.root()[0] >= 0xf8);
+            {
+                let _writer = database.mutation.lock().unwrap();
+                database.save(&retained, limits).unwrap();
+                database.save(&orphan, limits).unwrap();
+                database.remove_root(orphan.root()).unwrap();
+            }
+            let mut published_during_marking = retained.clone();
+            published_during_marking
+                .set_account(
+                    Address::repeat_byte(3),
+                    AccountData { nonce: 1, ..Default::default() },
+                )
+                .unwrap();
+            let mut repaired = false;
+            let result = database.collect_cooperatively_with::<Blake3Hasher>(1, |phase| {
+                assert!(!database.collect_cooperatively::<Blake3Hasher>()?);
+                match phase {
+                    CollectionPhase::Marked => {
+                        let _writer = database.mutation.try_lock().unwrap();
+                        database.save(&published_during_marking, limits)?;
+                    }
+                    CollectionPhase::Swept
+                        if !repaired
+                            && matches!(
+                                database.load::<Blake3Hasher>(
+                                    orphan.root(),
+                                    orphan.tree().len(),
+                                    limits
+                                ),
+                                Err(NodeError::Artifact(ArtifactError::Invalid(
+                                    "missing PBT node"
+                                )))
+                            ) =>
+                    {
+                        // A parent still exists while one of its children is already gone.
+                        assert!(database.db.get(database_key(NODE, orphan.root()))?.is_some());
+                        let _writer = database.mutation.try_lock().unwrap();
+                        database.save(&orphan, limits)?;
+                        repaired = true;
+                        if interrupt {
+                            return Err(
+                                ArtifactError::Invalid("interrupted cooperative sweep").into()
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            });
+            assert!(repaired);
+            if interrupt {
+                assert!(matches!(
+                    result,
+                    Err(NodeError::Artifact(ArtifactError::Invalid(
+                        "interrupted cooperative sweep"
+                    )))
+                ));
+                assert!(database.db.get(GC_PENDING).unwrap().is_some());
+            } else {
+                assert!(result.unwrap());
+            }
+            assert!(!database.collecting.load(Ordering::Acquire));
+            let _writer = database.mutation.lock().unwrap();
+            // This save must recover a failed sweep before trusting existing parents.
+            database.save(&retained, limits).unwrap();
+            assert!(database.db.get(GC_PENDING).unwrap().is_none());
+            for state in [&retained, &orphan, &published_during_marking] {
+                let restored = database
+                    .load::<Blake3Hasher>(state.root(), state.tree().len(), limits)
+                    .unwrap();
+                assert_eq!(
+                    Artifacts::from_state(&restored).unwrap(),
+                    Artifacts::from_state(state).unwrap()
+                );
+            }
+        }
     }
 
     fn node_count(database: &NodeDatabase) -> usize {

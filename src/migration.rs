@@ -271,6 +271,21 @@ impl Default for DecodeLimits {
     }
 }
 
+impl DecodeLimits {
+    /// Removes consumer resource caps for locally executed native state.
+    ///
+    /// Never use this for untrusted migration artifacts. Artifact import budgets
+    /// are independent of valid chain growth; format and state validation still apply.
+    pub const fn native() -> Self {
+        Self {
+            max_accounts: usize::MAX,
+            max_leaves: usize::MAX,
+            max_code_size: usize::MAX,
+            max_total_code_size: usize::MAX,
+        }
+    }
+}
+
 /// Reconstructs the Ethereum MPT commitment from plain account/storage data.
 pub fn mpt_root<H: TreeHasher>(state: &StateTree<H>) -> B256 {
     state_root_unhashed(state.accounts().map(|(address, account)| {
