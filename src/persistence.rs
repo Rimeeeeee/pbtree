@@ -355,13 +355,21 @@ impl NodeDatabase {
     /// Destructively unregisters a root after external references have been removed.
     /// Hold `mutation`; shared nodes are retained until `collect` runs.
     pub fn remove_root(&self, root: B256) -> Result<(), NodeError> {
+        self.remove_root_with(root, || {})
+    }
+
+    fn remove_root_with(&self, root: B256, after_write: impl FnOnce()) -> Result<(), NodeError> {
         if self.is_pinned(root)? {
             return Err(ArtifactError::Invalid("PBT root is pinned").into());
         }
-        self.invalidate_caches();
         let mut batch = WriteBatch::default();
         batch.delete(database_key(ROOT, root));
-        write(&self.db, batch)
+        let result = write(&self.db, batch);
+        after_write();
+        // Readers can inspect registered roots without taking mutation. Publish the
+        // generation after deletion so they cannot retain a root about to disappear.
+        self.invalidate_caches();
+        result
     }
 
     /// Destructively reclaims nodes unreachable from every registered root.
@@ -558,8 +566,8 @@ impl NodeDatabase {
         self.generation.load(Ordering::Acquire)
     }
 
-    /// Invalidates client caches before removing external references or roots.
-    /// Hold `mutation` until removal completes; readers missing their cache must take it.
+    /// Invalidates client caches after removing external references or roots.
+    /// Hold `mutation` until invalidation completes; readers missing their cache must take it.
     pub fn invalidate_caches(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
@@ -1012,7 +1020,14 @@ mod tests {
         database.save(&state, DecodeLimits::native()).unwrap();
         assert_eq!(database.roots().collect::<Result<Vec<_>, _>>().unwrap(), vec![state.root()]);
         let generation = other.generation();
-        database.remove_root(state.root()).unwrap();
+        database
+            .remove_root_with(state.root(), || {
+                // A cache reader must not consume the next generation while the
+                // root is still registered and keep that entry after removal.
+                assert_eq!(other.generation(), generation);
+                assert_eq!(other.leaf_count(state.root()).unwrap(), None);
+            })
+            .unwrap();
         assert_ne!(other.generation(), generation);
         assert_eq!(other.leaf_count(state.root()).unwrap(), None);
         assert_eq!(
