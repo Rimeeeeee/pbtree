@@ -33,22 +33,21 @@ impl Artifacts {
             if account.is_empty() {
                 return Err(ArtifactError::Invalid("empty anchor account"));
             }
-            let kind = if account.is_delegation() { 2 } else { u8::from(!account.code.is_empty()) };
+            let delegation = key::delegation_target(&account.code);
+            let kind = if delegation.is_some() { 2 } else { u8::from(!account.code.is_empty()) };
             snapshot.push(kind);
             snapshot.extend_from_slice(hash.as_slice());
             put_integer(&mut snapshot, &account.nonce.to_be_bytes());
             put_integer(&mut snapshot, &account.balance.to_be_bytes::<32>());
-            match kind {
-                1 => {
-                    snapshot.extend_from_slice(keccak256(&account.code).as_slice());
-                    put_integer(&mut snapshot, &(account.code.len() as u32).to_be_bytes());
-                }
-                2 => snapshot.extend_from_slice(&account.code[3..]),
-                _ => {}
+            if let Some(target) = delegation {
+                snapshot.extend_from_slice(target.as_slice());
+            } else if kind == 1 {
+                snapshot.extend_from_slice(keccak256(&account.code).as_slice());
+                put_integer(&mut snapshot, &(account.code.len() as u32).to_be_bytes());
             }
             let mut inline: Vec<_> = state
                 .storage_entries(*address)
-                .filter(|(slot, _)| *slot < U256::from(64))
+                .filter(|(slot, _)| *slot < U256::from(key::HEADER_STORAGE_SLOTS))
                 .collect();
             inline.sort_unstable_by_key(|(slot, _)| *slot);
             snapshot.push(inline.len() as u8);
@@ -187,7 +186,12 @@ fn decode_state<H: TreeHasher>(
         }
         let code = match &header.code {
             CodeRef::Empty => Bytes::new(),
-            CodeRef::Delegation(target) => [vec![0xef, 1, 0], target.to_vec()].concat().into(),
+            CodeRef::Delegation(target) => {
+                if target.is_zero() {
+                    return Err(ArtifactError::Invalid("zero delegation target"));
+                }
+                key::encode_delegation(*target)[..key::DELEGATION_SIZE].to_vec().into()
+            }
             CodeRef::Contract(hash, size) => {
                 if let Some(code) = codes.get(hash) {
                     if code.len() != *size {
@@ -376,35 +380,36 @@ fn parse_snapshot(
                         }
                         (CodeRef::Contract(hash, size), size as u32)
                     }
-                    _ => (CodeRef::Delegation(Address::from_slice(reader.take(20)?)), 23),
+                    _ => (
+                        CodeRef::Delegation(Address::from_slice(reader.take(20)?)),
+                        key::DELEGATION_SIZE as u32,
+                    ),
                 };
                 let mut stem = vec![key::ACCOUNT_ZONE];
                 stem.extend_from_slice(address_hash.as_slice());
                 let basic = key::encode_basic_data(size, nonce, balance)?;
                 if !basic.is_zero() {
-                    add_leaf(&mut leaves, &stem, 0, basic, limits)?;
+                    add_leaf(&mut leaves, &stem, key::BASIC_DATA_LEAF_KEY, basic, limits)?;
                 }
-                match &code {
-                    CodeRef::Empty => add_leaf(&mut leaves, &stem, 1, keccak256([]), limits)?,
-                    CodeRef::Contract(hash, _) => add_leaf(&mut leaves, &stem, 1, *hash, limits)?,
+                let (sub_index, value) = match &code {
+                    CodeRef::Empty => (key::CODE_HASH_LEAF_KEY, keccak256([])),
+                    CodeRef::Contract(hash, _) => (key::CODE_HASH_LEAF_KEY, *hash),
                     CodeRef::Delegation(target) => {
-                        let mut value = [0; 32];
-                        value[..3].copy_from_slice(&[0xef, 1, 0]);
-                        value[3..23].copy_from_slice(target.as_slice());
-                        add_leaf(&mut leaves, &stem, 2, B256::from(value), limits)?;
+                        (key::DELEGATION_LEAF_KEY, key::encode_delegation(*target))
                     }
-                }
+                };
+                add_leaf(&mut leaves, &stem, sub_index, value, limits)?;
                 let count = reader.byte()?;
-                if count > 64 {
+                if u64::from(count) > key::HEADER_STORAGE_SLOTS {
                     return Err(ArtifactError::Invalid("too many header slots"));
                 }
                 for _ in 0..count {
                     let slot = reader.byte()?;
-                    if slot >= 64 {
+                    if u64::from(slot) >= key::HEADER_STORAGE_SLOTS {
                         return Err(ArtifactError::Invalid("invalid inline slot"));
                     }
                     let value = B256::from(reader.integer(32)?);
-                    add_leaf(&mut leaves, &stem, 64 + slot, value, limits)?;
+                    add_leaf(&mut leaves, &stem, key::HEADER_STORAGE_OFFSET + slot, value, limits)?;
                 }
                 if headers.insert(address_hash, Header { nonce, balance, code }).is_some() {
                     return Err(ArtifactError::Invalid("duplicate header"));
@@ -553,11 +558,12 @@ pub(crate) fn restore_leaves<H: TreeHasher>(
                 CodeRef::Contract(*hash, size)
             }
             (None, Some(value))
-                if size == 23
-                    && value[..3] == [0xef, 1, 0]
-                    && value[23..].iter().all(|byte| *byte == 0) =>
+                if size == key::DELEGATION_SIZE
+                    && value[key::DELEGATION_SIZE..].iter().all(|byte| *byte == 0) =>
             {
-                CodeRef::Delegation(Address::from_slice(&value[3..23]))
+                let target = key::delegation_target(&value[..key::DELEGATION_SIZE])
+                    .ok_or(ArtifactError::Invalid("invalid account code leaves"))?;
+                CodeRef::Delegation(target)
             }
             _ => return Err(ArtifactError::Invalid("invalid account code leaves")),
         };
@@ -566,7 +572,11 @@ pub(crate) fn restore_leaves<H: TreeHasher>(
         }
         headers.insert(*hash, Header { nonce, balance, code });
         let first = key::header_key_from_hash(*hash, key::HEADER_STORAGE_OFFSET).to_vec();
-        let last = key::header_key_from_hash(*hash, key::HEADER_STORAGE_OFFSET + 63).to_vec();
+        let last = key::header_key_from_hash(
+            *hash,
+            key::HEADER_STORAGE_OFFSET + (key::HEADER_STORAGE_SLOTS - 1) as u8,
+        )
+        .to_vec();
         for (key, _) in leaves.range(first..=last) {
             let slot = key[33] - key::HEADER_STORAGE_OFFSET;
             plain_slots.entry(*address).or_default().push(B256::from(U256::from(slot)));

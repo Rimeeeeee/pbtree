@@ -71,6 +71,26 @@ fn populated_state_roundtrips_canonically_regardless_of_insertion_order() {
 }
 
 #[test]
+fn snapshot_rejects_a_zero_delegation_target() {
+    let address = Address::repeat_byte(1);
+    let target = Address::repeat_byte(2);
+    let mut code = vec![0xef, 1, 0];
+    code.extend_from_slice(target.as_slice());
+    let mut state = StateTree::<Blake3Hasher>::new();
+    state
+        .set_account(address, AccountData { nonce: 1, code: code.into(), ..Default::default() })
+        .unwrap();
+    let mut artifacts = Artifacts::from_state(&state).unwrap();
+    let target_offset =
+        artifacts.snapshot.windows(20).position(|bytes| bytes == target.as_slice()).unwrap();
+    artifacts.snapshot[target_offset..target_offset + 20].fill(0);
+    assert!(matches!(
+        artifacts.verify::<Blake3Hasher>(mpt_root(&state), DecodeLimits::default()),
+        Err(pbt::migration::ArtifactError::Invalid("zero delegation target"))
+    ));
+}
+
+#[test]
 fn every_truncation_and_trailing_byte_is_rejected() {
     let mut state = StateTree::<Blake3Hasher>::new();
     let address = Address::repeat_byte(1);

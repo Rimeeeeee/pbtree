@@ -153,12 +153,26 @@ impl<H: TreeHasher> StateTree<H> {
         self.storages.get(&address).into_iter().flat_map(|slots| slots.values().copied())
     }
 
+    /// Whether any nonzero storage exists for this account, inline or in the storage zone.
+    pub fn has_storage(&self, address: Address) -> bool {
+        self.storages.contains_key(&address)
+    }
+
     /// Replaces account header/code data while preserving its storage.
     ///
     /// This encodes even an explicitly supplied empty account, as required by the standalone
     /// embedding vectors. Use [`Self::apply_account`] for post-Merge state clearing. Invalid
     /// balances are rejected before mutation. Shared code survives deletion of one owner.
+    /// A zero-target delegation indicator is treated as empty code.
     pub fn set_account(
+        &mut self,
+        address: Address,
+        account: AccountData,
+    ) -> Result<(), StateError> {
+        self.set_account_normalized(address, account.normalize_delegation())
+    }
+
+    fn set_account_normalized(
         &mut self,
         address: Address,
         account: AccountData,
@@ -213,13 +227,11 @@ impl<H: TreeHasher> StateTree<H> {
         if same_code {
             // Only basic data changed; code ownership and code/delegation leaves
             // already describe the same bytes in this snapshot.
-        } else if account.is_delegation() {
+        } else if let Some(target) = key::delegation_target(&account.code) {
             self.remove_leaf(&key::header_key_from_hash(position, CODE_HASH_LEAF_KEY));
-            let mut value = [0; 32];
-            value[..23].copy_from_slice(&account.code);
             self.write(
                 key::header_key_from_hash(position, DELEGATION_LEAF_KEY).to_vec(),
-                B256::from(value),
+                key::encode_delegation(target),
             );
         } else {
             self.remove_leaf(&key::header_key_from_hash(position, DELEGATION_LEAF_KEY));
@@ -242,8 +254,8 @@ impl<H: TreeHasher> StateTree<H> {
         address: Address,
         account: Option<AccountData>,
     ) -> Result<(), StateError> {
-        match account {
-            Some(account) if !account.is_empty() => self.set_account(address, account),
+        match account.map(AccountData::normalize_delegation) {
+            Some(account) if !account.is_empty() => self.set_account_normalized(address, account),
             _ => {
                 self.remove_account(address);
                 Ok(())
@@ -281,7 +293,7 @@ impl<H: TreeHasher> StateTree<H> {
             .unwrap_or_default()
     }
 
-    /// Writes a plain slot; a zero value deletes the corresponding leaf.
+    /// Writes a plain slot. A zero value deletes the leaf or is a no-op if absent.
     pub fn set_storage(
         &mut self,
         address: Address,
@@ -289,7 +301,7 @@ impl<H: TreeHasher> StateTree<H> {
         value: B256,
     ) -> Result<(), StateError> {
         if !self.accounts.contains_key(&address) {
-            return Err(StateError::MissingAccount(address));
+            return if value.is_zero() { Ok(()) } else { Err(StateError::MissingAccount(address)) };
         }
         let key = key::storage_key::<H>(address, slot);
         if self
@@ -450,7 +462,14 @@ impl AccountData {
 
     /// Whether this code is an EIP-7702 delegation indicator.
     pub fn is_delegation(&self) -> bool {
-        self.code.len() == 23 && self.code.starts_with(&[0xef, 0x01, 0x00])
+        key::delegation_target(&self.code).is_some()
+    }
+
+    fn normalize_delegation(mut self) -> Self {
+        if key::delegation_target(&self.code) == Some(Address::ZERO) {
+            self.code = Bytes::new();
+        }
+        self
     }
 
     fn contract_hash(&self) -> Option<B256> {
@@ -473,7 +492,7 @@ pub enum StateError {
     /// The code length cannot fit the basic-data leaf's four-byte size field.
     #[error("code length exceeds the PBT 32-bit field")]
     CodeSizeOverflow,
-    /// Storage cannot be attached to an account absent from the state.
+    /// Nonzero storage cannot be attached to an account absent from the state.
     #[error("storage write to absent account {0}")]
     MissingAccount(Address),
     /// Invalid generic tree input.
@@ -501,7 +520,8 @@ mod stats_tests {
             } else {
                 let code = match random % 5 {
                     0 => Vec::new(),
-                    1 => [vec![0xef, 1, 0], Address::ZERO.to_vec()].concat(),
+                    1 => key::encode_delegation(Address::repeat_byte(1))[..key::DELEGATION_SIZE]
+                        .to_vec(),
                     value => vec![0x7f; value as usize * 31],
                 };
                 state

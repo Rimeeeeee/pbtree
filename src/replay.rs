@@ -79,12 +79,8 @@ fn replay_with<H: TreeHasher>(
             account.code = code.clone();
         }
         state.apply_account(changes.address, Some(account))?;
-        let has_account = state.account(changes.address).is_some();
         for (slot, value) in changes.storage_post_states() {
-            // A zero post-value only deletes a leaf, but a nonzero value requires an account.
-            if has_account || !value.is_zero() {
-                state.set_storage(changes.address, slot, B256::from(value))?;
-            }
+            state.set_storage(changes.address, slot, B256::from(value))?;
         }
     }
     finish(&mut state)?;
