@@ -895,7 +895,7 @@ mod tests {
         for byte in 1..=3 {
             let mut code = if byte == 3 { vec![0xef, 1, 0] } else { vec![0x7f; 95] };
             if byte == 3 {
-                code.extend_from_slice(Address::ZERO.as_slice());
+                code.extend_from_slice(Address::repeat_byte(4).as_slice());
             }
             let address = Address::repeat_byte(byte);
             state

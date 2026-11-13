@@ -138,6 +138,36 @@ fn delegation_replacement_and_clearing() {
 }
 
 #[test]
+fn zero_target_clears_delegation_in_direct_and_batched_updates() {
+    let address = Address::repeat_byte(1);
+    let mut code = vec![0xef, 1, 0];
+    code.extend_from_slice(Address::repeat_byte(2).as_slice());
+    let mut initial = StateTree::<Blake3Hasher>::new();
+    initial.set_account(address, account(code)).unwrap();
+    initial.set_storage(address, U256::from(64), B256::repeat_byte(7)).unwrap();
+
+    let clear = account([&[0xef, 1, 0][..], &[0; 20]].concat());
+    let mut direct = initial.clone();
+    direct.set_account(address, clear.clone()).unwrap();
+    let mut batched = initial.clone();
+    batched.apply_batch([StateUpdate::Account { address, account: Some(clear) }]).unwrap();
+    let mut expected = initial.clone();
+    expected.set_account(address, account(Vec::new())).unwrap();
+    for state in [direct, batched] {
+        assert_eq!(state.root(), expected.root());
+        assert_eq!(state.account(address), expected.account(address));
+        assert_eq!(state.storage(address, U256::from(64)), B256::repeat_byte(7));
+    }
+    assert!(initial.account(address).unwrap().is_delegation());
+
+    let clear =
+        AccountData { code: [&[0xef, 1, 0][..], &[0; 20]].concat().into(), ..Default::default() };
+    initial.apply_account(address, Some(clear)).unwrap();
+    assert_eq!(initial.root(), B256::ZERO);
+    assert!(initial.account(address).is_none());
+}
+
+#[test]
 fn storage_wipe_and_account_clear_cover_both_zones() {
     let a = Address::repeat_byte(1);
     let b = Address::repeat_byte(2);
@@ -186,10 +216,31 @@ fn invalid_account_is_rejected_atomically() {
     );
     assert_eq!(state.root(), root);
     assert_eq!(state.account(a).unwrap().code.as_ref(), [1]);
-    assert_eq!(
-        state.set_storage(Address::ZERO, U256::ZERO, B256::ZERO),
-        Err(StateError::MissingAccount(Address::ZERO))
-    );
+}
+
+#[test]
+fn storage_presence_and_zero_writes_follow_the_state_leaves() {
+    let owner = Address::repeat_byte(1);
+    let absent = Address::repeat_byte(2);
+    let mut state = StateTree::<Blake3Hasher>::new();
+    state.set_account(owner, account(Vec::new())).unwrap();
+    let root = state.root();
+    assert!(!state.has_storage(owner));
+    for slot in [U256::from(63), U256::from(64), U256::MAX] {
+        state.set_storage(absent, slot, B256::ZERO).unwrap();
+        assert!(!state.has_storage(absent));
+        assert_eq!(state.root(), root);
+        assert_eq!(
+            state.set_storage(absent, slot, B256::repeat_byte(1)),
+            Err(StateError::MissingAccount(absent))
+        );
+        state.set_storage(owner, slot, B256::repeat_byte(1)).unwrap();
+        assert!(state.has_storage(owner));
+        state.set_storage(owner, slot, B256::ZERO).unwrap();
+        assert!(!state.has_storage(owner));
+        assert_eq!(state.root(), root);
+    }
+    assert!(state.account(absent).is_none());
 }
 
 #[test]

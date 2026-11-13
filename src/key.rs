@@ -26,6 +26,21 @@ pub const ACCOUNT_KEY_LENGTH: usize = 34;
 /// Overflow storage key length in bytes.
 pub const STORAGE_KEY_LENGTH: usize = 66;
 
+const DELEGATION_PREFIX: [u8; 3] = [0xef, 0x01, 0x00];
+pub(crate) const DELEGATION_SIZE: usize = 23;
+
+pub(crate) fn delegation_target(code: &[u8]) -> Option<Address> {
+    let target = code.strip_prefix(&DELEGATION_PREFIX)?;
+    (code.len() == DELEGATION_SIZE).then(|| Address::from_slice(target))
+}
+
+pub(crate) fn encode_delegation(target: Address) -> B256 {
+    let mut value = [0; 32];
+    value[..DELEGATION_PREFIX.len()].copy_from_slice(&DELEGATION_PREFIX);
+    value[DELEGATION_PREFIX.len()..DELEGATION_SIZE].copy_from_slice(target.as_slice());
+    B256::from(value)
+}
+
 /// Pads a legacy address to the 32-byte address used for PBT key derivation.
 pub fn address32(address: Address) -> B256 {
     let mut bytes = [0; 32];
