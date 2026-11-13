@@ -1,16 +1,14 @@
 //! Synchronous durable saves and authenticated reconstruction of an uncached StateTree.
 //! RocksDB and OS caches may remain warm; fixture setup, mutation, and collection are untimed.
 
+#![allow(missing_docs)] // CodSpeed's macros generate undocumented public functions.
+
 use alloy_primitives::{Address, B256, U256};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use pbt::{
     AccountData, Blake3Hasher, StateTree, migration::DecodeLimits, persistence::NodeDatabase,
 };
-use std::{
-    hint::black_box,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{hint::black_box, sync::Arc};
 
 type State = StateTree<Blake3Hasher>;
 const SIZES: [usize; 3] = [256, 4_096, 16_384];
@@ -66,30 +64,37 @@ fn saves(c: &mut Criterion) {
         let database = &fixture.database;
         let _mutation = database.mutation.lock().unwrap();
         let target = address(size / 2);
+        let mut previous_root = None;
+        let mut saves = 0u64;
         group.bench_function(BenchmarkId::new("sync_one_account_change", size), |b| {
-            b.iter_custom(|iterations| {
-                let mut elapsed = Duration::ZERO;
-                for iteration in 0..iterations {
-                    let previous_root = state.root();
+            // Prepare exactly one new root before each measured save. Removing the
+            // previous root and collecting unreachable paths happen between saves.
+            b.iter_batched_ref(
+                || {
+                    if let Some(root) = previous_root.take() {
+                        database.remove_root(root).unwrap();
+                        saves += 1;
+                        if saves.is_multiple_of(64) {
+                            database.collect::<Blake3Hasher>().unwrap();
+                        }
+                    }
+                    let root = state.root();
                     let mut account = state.account(target).unwrap().clone();
                     account.nonce = account.nonce.checked_add(1).unwrap();
                     state.set_account(target, account).unwrap();
-                    assert_ne!(state.root(), previous_root);
+                    assert_ne!(state.root(), root);
                     assert_eq!(database.leaf_count(state.root()).unwrap(), None);
-
-                    let start = Instant::now();
-                    database.save(black_box(&state), black_box(limits)).unwrap();
-                    elapsed += start.elapsed();
-
-                    database.remove_root(previous_root).unwrap();
-                    // Bound unreachable paths without charging GC or root removal to save.
-                    if iteration % 64 == 63 || iteration + 1 == iterations {
-                        database.collect::<Blake3Hasher>().unwrap();
-                    }
-                }
-                elapsed
-            });
+                    previous_root = Some(root);
+                    state.clone()
+                },
+                |state| database.save(black_box(&*state), black_box(limits)).unwrap(),
+                BatchSize::PerIteration,
+            );
         });
+        if let Some(root) = previous_root {
+            database.remove_root(root).unwrap();
+            database.collect::<Blake3Hasher>().unwrap();
+        }
         group.bench_function(BenchmarkId::new("sync_unchanged", size), |b| {
             b.iter(|| database.save(black_box(&state), black_box(limits)).unwrap());
         });

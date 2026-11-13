@@ -1,5 +1,7 @@
 //! Canonical artifact conversion with authenticated roots prepared outside the timed region.
 
+#![allow(missing_docs)] // CodSpeed's macros generate undocumented public functions.
+
 use alloy_primitives::{Address, B256, U256};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use pbt::{

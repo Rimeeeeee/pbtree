@@ -24,7 +24,7 @@ alloy-eip7928 = { version = "0.4.10", default-features = false, features = ["rlp
 rocksdb = { version = "0.24", default-features = false, features = ["lz4", "zstd", "bindgen-runtime"], optional = true }
 
 [dev-dependencies]
-criterion = "0.8.2"
+criterion = { package = "codspeed-criterion-compat", version = "6.0.0" }
 proptest = "1.7"
 serde_json = "1.0"
 tempfile = "3.20"

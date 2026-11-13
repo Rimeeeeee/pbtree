@@ -73,9 +73,6 @@ cargo test -p pbt --all-features
 cargo clippy -p pbt --all-features --all-targets -- -D warnings
 ```
 
-Run the tree and state benchmarks with `cargo bench`. Enable the optional
-migration, BAL replay, and persistence benchmarks with `cargo bench --all-features`.
-
 With `parallel` enabled, call
 `BinaryTree::from_sorted_entries_parallel` to build sorted leaves using Rayon.
 It returns the usual `BinaryTree` with the same root and proof format. Small
@@ -107,7 +104,6 @@ assert_eq!(tree.len(), 16_384);
 
 ```sh
 cargo test --features parallel
-cargo bench --features parallel --bench backends
 ```
 
 Coverage-guided tree and artifact fuzzing runs in CI. Local commands and input
@@ -121,59 +117,32 @@ This extraction does not establish mainnet-scale performance or production readi
 
 ## Benchmarks
 
-Measured on 2026-11-11 at `a3484da`. Mean times in release mode,
-using BLAKE3 and all features. Each case uses **50 samples**, a 1 s warm-up,
-and a 5 s target measurement. [All 93 results and 95% confidence intervals](benches/results/current-2026-11-11.json).
+The [CodSpeed workflow](.github/workflows/codspeed.yml) runs all six suites on
+pull requests, pushes to `main`, and manual runs. See the
+[CodSpeed dashboard](https://codspeed.io/Rimeeeeee/pbtree) for results and
+comparisons once the repository is connected and `main` has a baseline run.
 
-- CPU: **AMD Ryzen 9 8940HX, 16 cores / 32 threads**.
-- OS: Ubuntu 24.04.5 LTS (WSL2), Linux 6.18.58.1.
-- Memory available to the benchmark environment: 15.2 GiB.
-- Compiler: `rustc 1.97.0-nightly (d3cd04068 2026-05-16)`.
-- Parallel builder: 32 Rayon worker threads.
+CI uses CPU simulation to track CPU work. Use local wall-clock timings to measure
+RocksDB I/O and the elapsed-time benefit of parallel execution.
 
-### Default library
+```sh
+cargo bench --locked --benches                                     # tree and state
+cargo bench --locked --benches --all-features                      # all six suites
+cargo bench --locked --features parallel --bench backends          # serial vs. Rayon
+```
 
-Tree cases use Ethereum header keys. State fixtures have four storage slots per account.
+The full suite adds migration, BAL replay, RocksDB persistence, and parallel
+construction. The persistence suite requires a C++ compiler and libclang.
+For a local check of the CodSpeed harness on Linux:
 
-| Operation | Fixture | Mean time |
-|---|---|---:|
-| Sorted tree build | 262,144 leaves | 180 ms |
-| Incremental tree build | 262,144 leaves | 2.05 s |
-| Leaf replacement | 262,144 leaves | 4.93 us |
-| Leaf removal | 262,144 leaves | 4.69 us |
-| Membership proof generation | 262,144 leaves | 322 ns |
-| Membership proof verification | 262,144 leaves | 4.34 us |
-| Absence proof generation | 262,144 leaves | 453 ns |
-| Absence proof verification | 262,144 leaves | 4.86 us |
-| Account balance update | 16,384 accounts | 8 us |
-| Inline storage replacement | 16,384 accounts | 7.72 us |
-| Overflow storage replacement | 16,384 accounts | 7.31 us |
-| Overflow storage deletion | 16,384 accounts | 6.06 us |
-| Account removal, shared code | 16,384 accounts | 37.1 us |
-| Artifact encoding | 16,384 accounts | 106 ms |
-| MPT anchor verification | 16,384 accounts | 781 ms |
-| PBT checkpoint restoration | 16,384 accounts | 598 ms |
-| Authenticated BAL replay | 64 changed / 16,384 parent accounts | 2.04 ms |
-| Authenticated BAL replay | 256 changed / 16,384 parent accounts | 8.48 ms |
-| Authenticated BAL replay | 4,096 changed / 16,384 parent accounts | 102 ms |
-| Finalization, same anchor | 16,384 layers | 354 ns |
-| Midpoint finalization | 16,384 layers | 9 ms |
-| Tip finalization | 16,384 layers | 6.4 ms |
-| Synced save, one account changed | 16,384 accounts | 3.11 ms |
-| Synced save, unchanged state | 16,384 accounts | 2.26 ms |
-| Verified state reconstruction, warm DB cache | 16,384 accounts | 1.11 s |
+```sh
+cargo install cargo-codspeed --version 6.0.0 --locked
+cargo codspeed build --locked --all-features -m simulation
+cargo codspeed run -m simulation
+```
 
-### Parallel builder
+The last command runs the benchmarks locally to verify the harness. GitHub
+Actions runs them under CodSpeed's simulator and uploads the measurements.
 
-These cases use identical sorted 32-byte keys for every backend.
-
-| Sorted build | Default tree | `parallel` |
-|---|---:|---:|
-| 16,384 leaves | 10.7 ms | 4.26 ms |
-| 65,536 leaves | 43.1 ms | 8.83 ms |
-| 262,144 leaves | 181 ms | 23.2 ms |
-
-Fixture setup is untimed. Point reads and writes target a fixed key/account.
-Persistence saves include synchronous WAL writes and exclude root removal and GC;
-state reconstruction uses a fresh in-memory state with potentially warm database
-and OS caches.
+The [November 11 wall-clock run](benches/results/current-2026-11-11.json) is
+archived for reference.
