@@ -119,11 +119,14 @@ This extraction does not establish mainnet-scale performance or production readi
 
 The [CodSpeed workflow](.github/workflows/codspeed.yml) runs all six suites on
 pull requests, pushes to `main`, and manual runs. See the
-[CodSpeed dashboard](https://codspeed.io/Rimeeeeee/pbtree) for results and
+[CodSpeed dashboard](https://app.codspeed.io/Rimeeeeee/pbtree) for results and
 comparisons once the repository is connected and `main` has a baseline run.
 
-CI uses CPU simulation to track CPU work. Use local wall-clock timings to measure
-RocksDB I/O and the elapsed-time benefit of parallel execution.
+CI fixes Rayon at four workers so baseline and pull request runs use the same
+task partitioning. CodSpeed estimates CPU work in simulation mode. Serial and
+parallel builds can do similar CPU work even when the parallel build finishes
+sooner. Run the benchmarks locally to measure elapsed time for parallel builds
+or RocksDB I/O. Set `RAYON_NUM_THREADS=4` in your shell to match CI's pool size.
 
 ```sh
 cargo bench --locked --benches                                     # tree and state
@@ -143,35 +146,3 @@ cargo codspeed run -m simulation
 
 The last command runs the benchmarks locally to verify the harness. GitHub
 Actions runs them under CodSpeed's simulator and uploads the measurements.
-
-### Local wall-clock snapshot
-
-Measured on 2026-11-13 with Rust 1.96.0, all features, and BLAKE3 on an Intel
-Core i5-1340P (Ubuntu 24.04 under WSL2; 16 Rayon threads). These are release
-means from 10 samples per case, with a 0.3 s warm-up and a 1 s measurement
-target. Local verification checks ran alongside part of the measurement, so
-these times are illustrative.
-[All 85 results and 95% confidence intervals](benches/results/local-2026-11-13.json).
-
-| Operation | Fixture | Mean time |
-|---|---|---:|
-| Sorted tree build | 262,144 leaves | 104 ms |
-| Incremental tree build | 262,144 leaves | 1.4 s |
-| Membership proof generation | 262,144 leaves | 175 ns |
-| Account balance update | 16,384 accounts | 5.31 µs |
-| MPT anchor verification | 16,384 accounts | 677 ms |
-| Authenticated BAL replay | 256 changed / 16,384 parent accounts | 6.43 ms |
-| Synced save, one account changed | 16,384 accounts | 1.83 ms |
-| Verified state reconstruction, warm DB cache | 16,384 accounts | 1.12 s |
-
-| Sorted build (same 32-byte keys) | Serial | Rayon |
-|---|---:|---:|
-| 16,384 leaves | 8.23 ms | 3.53 ms |
-| 65,536 leaves | 33.7 ms | 8.4 ms |
-| 262,144 leaves | 137 ms | 35.6 ms |
-
-The synced save includes the WAL sync; fixture setup, root removal, and
-garbage collection are outside the measured interval.
-
-The [November 11 wall-clock run](benches/results/current-2026-11-11.json) is
-archived for reference.
