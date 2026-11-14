@@ -112,6 +112,12 @@ fn deleting_shared_code_preserves_other_owner() {
     state.set_account(a, account(code.clone())).unwrap();
     let a_only = state.clone();
     state.set_account(b, account(code.clone())).unwrap();
+    let shared = a_only.account(a).unwrap().code.as_ptr();
+    assert_eq!(state.account(b).unwrap().code.as_ptr(), shared);
+    let mut updated = account(code.clone());
+    updated.nonce = 2;
+    state.set_account(b, updated).unwrap();
+    assert_eq!(state.account(b).unwrap().code.as_ptr(), shared);
     assert_eq!(state.tree().len(), 261);
     state.remove_account(b);
     assert_eq!(state.root(), a_only.root());

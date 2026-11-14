@@ -98,25 +98,47 @@ pub struct ReplayChain<H> {
     finalized: B256,
     blocks: BTreeMap<B256, ReplayLayer<H>>,
     max_layers: NonZeroUsize,
+    max_unfinalized_bytes: NonZeroUsize,
+    estimated_unfinalized_bytes: usize,
 }
 
 impl<H: TreeHasher> ReplayChain<H> {
-    /// Starts from a verified finalized anchor, retaining at most 1024 layers including it.
+    /// Starts from a verified finalized anchor with a 1024-layer limit and a 512 MiB
+    /// estimated memory budget for unfinalized layers.
     pub fn new(anchor: B256, state: StateTree<H>) -> Self {
         Self::with_limit(anchor, state, DEFAULT_MAX_LAYERS)
     }
 
-    /// Starts from a verified finalized anchor with an explicit retained-layer limit.
-    ///
-    /// The anchor counts toward `max_layers`. A limit of one retains only the anchor and
-    /// rejects every insertion. This is a local operator budget, not a protocol limit. It
-    /// bounds the number of snapshots, not their byte size.
+    /// Starts with an explicit retained-layer limit and the default 512 MiB memory budget.
     pub fn with_limit(anchor: B256, state: StateTree<H>, max_layers: NonZeroUsize) -> Self {
+        Self::with_limits(anchor, state, max_layers, DEFAULT_MAX_UNFINALIZED_BYTES)
+    }
+
+    /// Starts with explicit layer and estimated unfinalized memory budgets.
+    ///
+    /// The anchor counts toward `max_layers` and is excluded from `max_unfinalized_bytes`.
+    /// A child that shares all state with its parent is charged for the layer record only.
+    /// Other children are charged a whole-state estimate, including shared data. This
+    /// provides constant-time accounting but can overestimate retained memory. It excludes
+    /// temporary replay allocations and does not measure process memory.
+    pub fn with_limits(
+        anchor: B256,
+        state: StateTree<H>,
+        max_layers: NonZeroUsize,
+        max_unfinalized_bytes: NonZeroUsize,
+    ) -> Self {
         Self {
             finalized: anchor,
-            blocks: BTreeMap::from([(anchor, ReplayLayer { parent: None, state })]),
+            blocks: BTreeMap::from([(anchor, ReplayLayer { parent: None, state, charge: 0 })]),
             max_layers,
+            max_unfinalized_bytes,
+            estimated_unfinalized_bytes: 0,
         }
+    }
+
+    /// Returns the sum of the current unfinalized layer charges.
+    pub const fn estimated_unfinalized_bytes(&self) -> usize {
+        self.estimated_unfinalized_bytes
     }
 
     /// Returns the replayed state associated with a specific block hash.
@@ -132,7 +154,8 @@ impl<H: TreeHasher> ReplayChain<H> {
     /// Replays a child of any retained block. Competing branches are independent.
     ///
     /// At the retained-layer limit, fails before authenticating or applying the BAL. Existing
-    /// layers remain available for branch selection and finalization.
+    /// layers remain available for branch selection and finalization. The byte budget
+    /// is checked after replay and before retaining the new layer.
     pub fn insert(
         &mut self,
         hash: B256,
@@ -148,8 +171,22 @@ impl<H: TreeHasher> ReplayChain<H> {
             return Err(ReplayError::LayerLimitExceeded { max_layers: self.max_layers.get() });
         }
         let state = replay(parent_state, bal, expected_bal_hash)?;
+        let layer_bytes = size_of::<(B256, ReplayLayer<H>)>();
+        let charge = if state.shares_state_with(parent_state) {
+            layer_bytes
+        } else {
+            layer_bytes.saturating_add(state.estimated_memory_size())
+        };
+        let max_unfinalized_bytes = self.max_unfinalized_bytes.get();
+        let total = self
+            .estimated_unfinalized_bytes
+            .checked_add(charge)
+            .filter(|total| *total <= max_unfinalized_bytes)
+            .ok_or(ReplayError::MemoryLimitExceeded { max_unfinalized_bytes })?;
+
         let root = state.root();
-        self.blocks.insert(hash, ReplayLayer { parent: Some(parent), state });
+        self.blocks.insert(hash, ReplayLayer { parent: Some(parent), state, charge });
+        self.estimated_unfinalized_bytes = total;
         Ok(root)
     }
 
@@ -177,8 +214,20 @@ impl<H: TreeHasher> ReplayChain<H> {
                 pending.extend(descendants);
             }
         }
-        self.blocks.retain(|candidate, _| retained.contains(candidate));
-        self.blocks.get_mut(&hash).unwrap().parent = None;
+        let mut estimated_unfinalized_bytes = 0;
+        self.blocks.retain(|candidate, layer| {
+            if *candidate == hash {
+                layer.parent = None;
+                layer.charge = 0;
+            }
+            if retained.contains(candidate) {
+                estimated_unfinalized_bytes += layer.charge;
+                true
+            } else {
+                false
+            }
+        });
+        self.estimated_unfinalized_bytes = estimated_unfinalized_bytes;
         self.finalized = hash;
         Ok(state)
     }
@@ -214,12 +263,21 @@ pub enum ReplayError {
         /// Maximum retained layers, including the finalized anchor.
         max_layers: usize,
     },
+    /// Retaining the replayed snapshot would exceed the configured byte budget.
+    #[error(
+        "replay unfinalized memory budget of {max_unfinalized_bytes} bytes reached; finalize or obtain a recent finalized anchor"
+    )]
+    MemoryLimitExceeded {
+        /// Maximum estimated bytes in retained unfinalized layers.
+        max_unfinalized_bytes: usize,
+    },
 }
 
 #[derive(Clone, Debug)]
 struct ReplayLayer<H> {
     parent: Option<B256>,
     state: StateTree<H>,
+    charge: usize,
 }
 
 fn validate_indices(
@@ -237,3 +295,5 @@ fn validate_indices(
 
 const DEFAULT_MAX_LAYERS: NonZeroUsize =
     NonZeroUsize::new(1024).expect("replay layer limit is nonzero");
+const DEFAULT_MAX_UNFINALIZED_BYTES: NonZeroUsize =
+    NonZeroUsize::new(512 * 1024 * 1024).expect("replay memory budget is nonzero");

@@ -20,6 +20,56 @@ fn balance(address: Address, value: u64) -> AccountChanges {
 }
 
 #[test]
+fn replay_rejects_over_budget_layers_without_eviction_and_finality_returns_capacity() {
+    let address = Address::repeat_byte(1);
+    let anchor = B256::repeat_byte(10);
+    let left = B256::repeat_byte(11);
+    let right = B256::repeat_byte(12);
+    let tip = B256::repeat_byte(13);
+    let mut parent = StateTree::<Blake3Hasher>::new();
+    parent.set_account(address, AccountData { nonce: 1, ..Default::default() }).unwrap();
+    let changes = [balance(address, 1)];
+    let next_changes = [balance(address, 2)];
+    let digest = compute_block_access_list_hash(&changes);
+    let next_digest = compute_block_access_list_hash(&next_changes);
+    let mut reference = ReplayChain::new(anchor, parent.clone());
+    reference.insert(left, anchor, &changes, digest).unwrap();
+    let charge = reference.estimated_unfinalized_bytes();
+    let budget = charge * 2;
+    let mut chain = ReplayChain::with_limits(
+        anchor,
+        parent,
+        NonZeroUsize::new(5).unwrap(),
+        NonZeroUsize::new(budget).unwrap(),
+    );
+    chain.insert(left, anchor, &changes, digest).unwrap();
+    chain.insert(right, anchor, &next_changes, next_digest).unwrap();
+    assert_eq!(chain.estimated_unfinalized_bytes(), budget);
+    assert!(matches!(
+        chain.insert(tip, left, &next_changes, next_digest),
+        Err(ReplayError::MemoryLimitExceeded { max_unfinalized_bytes }) if max_unfinalized_bytes == budget
+    ));
+    assert_eq!(chain.estimated_unfinalized_bytes(), budget);
+    assert!(chain.state(tip).is_none());
+    assert!(chain.state(right).is_some());
+    let finalized = chain.finalize(left).unwrap();
+    assert!(chain.state(right).is_none());
+    assert_eq!(chain.estimated_unfinalized_bytes(), 0);
+    assert_eq!(
+        chain.insert(tip, left, &next_changes, next_digest).unwrap(),
+        replay(&finalized, &next_changes, next_digest).unwrap().root()
+    );
+    let shared = B256::repeat_byte(14);
+    chain.insert(shared, tip, &[], compute_block_access_list_hash(&[])).unwrap();
+    assert_eq!(chain.state(tip).unwrap().root(), chain.state(shared).unwrap().root());
+    assert!(chain.estimated_unfinalized_bytes() < budget);
+    chain.finalize(tip).unwrap();
+    assert!(chain.estimated_unfinalized_bytes() < charge);
+    chain.finalize(shared).unwrap();
+    assert_eq!(chain.estimated_unfinalized_bytes(), 0);
+}
+
+#[test]
 fn finality_prunes_long_forks_independently_of_hash_order() {
     const LENGTH: usize = 2048;
     let hashes: Vec<_> = (0..LENGTH)
