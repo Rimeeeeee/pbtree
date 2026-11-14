@@ -148,17 +148,13 @@ impl Artifacts {
 
     fn decode<H: TreeHasher>(&self, limits: DecodeLimits) -> Result<StateTree<H>, ArtifactError> {
         let (headers, leaves, claimed_root) = parse_snapshot(&self.snapshot, limits)?;
-        let state = decode_state::<H>(&headers, &leaves, &self.preimages, claimed_root, limits)?;
-        if Self::from_state(&state)? != *self {
-            return Err(ArtifactError::Invalid("noncanonical artifact encoding"));
-        }
-        Ok(state)
+        decode_state::<H>(headers, leaves, &self.preimages, claimed_root, limits)
     }
 }
 
 fn decode_state<H: TreeHasher>(
-    headers: &BTreeMap<B256, Header>,
-    leaves: &Leaves,
+    mut headers: BTreeMap<B256, Header>,
+    leaves: Leaves,
     preimages: &[u8],
     claimed_root: B256,
     limits: DecodeLimits,
@@ -178,7 +174,7 @@ fn decode_state<H: TreeHasher>(
         let address = Address::from_slice(preimages.take(20)?);
         check_order(&mut previous_account, keccak256(address))?;
         let header = headers
-            .get(&key::account_hash::<H>(address))
+            .remove(&key::account_hash::<H>(address))
             .ok_or(ArtifactError::Invalid("surplus account preimage"))?;
         let count = u32::from_be_bytes(preimages.take(4)?.try_into().unwrap()) as usize;
         if count > limits.max_leaves || count > preimages.0.len() / 32 {
@@ -234,17 +230,23 @@ fn decode_state<H: TreeHasher>(
                 .ok_or(ArtifactError::Invalid("surplus slot preimage"))?;
             state.set_storage(address, slot, value)?;
         }
+        if state.storage_entry_count(address) != count {
+            return Err(ArtifactError::Invalid("surplus slot preimage"));
+        }
     }
-    state.finish_batch()?;
-    // Equality of the exact leaf sets authenticates metadata and prevents surplus code,
-    // storage in the wrong zone, noncanonical PUSH bytes, and unreferenced groups.
-    if accounts != headers.len()
-        || !state.tree().entries().eq(leaves.iter().map(|(key, value)| (key.as_slice(), *value)))
+    // Compare the pending leaves before hashing the tree. This verifies the exact coverage and
+    // PUSH metadata while allowing the input maps to be released before node allocation.
+    if !headers.is_empty()
+        || !state.pending_leaves().eq(leaves.iter().map(|(key, value)| (key.as_slice(), *value)))
     {
         return Err(ArtifactError::Invalid(
             "snapshot and preimages do not describe the same state",
         ));
     }
+    drop(headers);
+    drop(leaves);
+    drop(codes);
+    state.finish_batch()?;
     if state.root() != claimed_root {
         return Err(ArtifactError::PbtRootMismatch);
     }
@@ -351,7 +353,10 @@ fn parse_snapshot(
     let mut reader = Reader(bytes);
     let mut headers = BTreeMap::new();
     let mut leaves = BTreeMap::new();
+    let mut previous_header = None;
+    let mut previous_code_group = None;
     let mut storage_account: Option<B256> = None;
+    let mut previous_storage_group = None;
     let root = loop {
         let tag = reader.byte()?;
         match tag {
@@ -359,7 +364,14 @@ fn parse_snapshot(
                 if headers.len() >= limits.max_accounts {
                     return Err(ArtifactError::ResourceLimit);
                 }
+                if previous_code_group.is_some() || storage_account.is_some() {
+                    return Err(ArtifactError::Invalid("header after code or storage"));
+                }
                 let address_hash = B256::from_slice(reader.take(32)?);
+                if previous_header.is_some_and(|previous| previous >= address_hash) {
+                    return Err(ArtifactError::Invalid("header records not strictly ordered"));
+                }
+                previous_header = Some(address_hash);
                 let nonce = reader.integer(8)?.to::<u64>();
                 let balance = reader.integer(16)?;
                 let (code, size) = match tag {
@@ -403,41 +415,75 @@ fn parse_snapshot(
                 if u64::from(count) > key::HEADER_STORAGE_SLOTS {
                     return Err(ArtifactError::Invalid("too many header slots"));
                 }
+                let mut previous_slot = None;
                 for _ in 0..count {
                     let slot = reader.byte()?;
+                    if previous_slot.is_some_and(|previous| previous >= slot) {
+                        return Err(ArtifactError::Invalid("inline slots not strictly ordered"));
+                    }
+                    previous_slot = Some(slot);
                     if u64::from(slot) >= key::HEADER_STORAGE_SLOTS {
                         return Err(ArtifactError::Invalid("invalid inline slot"));
                     }
                     let value = B256::from(reader.integer(32)?);
                     add_leaf(&mut leaves, &stem, key::HEADER_STORAGE_OFFSET + slot, value, limits)?;
                 }
-                if headers.insert(address_hash, Header { nonce, balance, code }).is_some() {
-                    return Err(ArtifactError::Invalid("duplicate header"));
-                }
+                headers.insert(address_hash, Header { nonce, balance, code });
             }
             3 | 5 | 6 => {
                 let mut stem = vec![if tag == 3 { key::CODE_ZONE } else { key::STORAGE_ZONE }];
-                if tag != 3 {
+                let previous_group = if tag == 3 {
+                    if storage_account.is_some() {
+                        return Err(ArtifactError::Invalid("code after storage"));
+                    }
+                    &mut previous_code_group
+                } else {
                     let address_hash = storage_account
                         .ok_or(ArtifactError::Invalid("storage group without account"))?;
-                    if !headers.contains_key(&address_hash) {
-                        return Err(ArtifactError::Invalid("storage without header"));
-                    }
                     stem.extend_from_slice(address_hash.as_slice());
+                    &mut previous_storage_group
+                };
+                let group = B256::from_slice(reader.take(32)?);
+                if previous_group.is_some_and(|previous| previous >= group) {
+                    return Err(ArtifactError::Invalid("groups not strictly ordered"));
                 }
-                stem.extend_from_slice(reader.take(32)?);
+                *previous_group = Some(group);
+                stem.extend_from_slice(group.as_slice());
                 let count = if tag == 5 { 1 } else { usize::from(reader.byte()?) + 1 };
                 if tag == 6 && count == 1 {
                     return Err(ArtifactError::Invalid("noncanonical singleton group"));
                 }
+                let mut previous_index = None;
                 for _ in 0..count {
                     let index = reader.byte()?;
+                    if previous_index.is_some_and(|previous| previous >= index) {
+                        return Err(ArtifactError::Invalid("subindices not strictly ordered"));
+                    }
+                    previous_index = Some(index);
                     let value = B256::from(reader.integer(32)?);
                     add_leaf(&mut leaves, &stem, index, value, limits)?;
                 }
             }
-            4 => storage_account = Some(B256::from_slice(reader.take(32)?)),
-            7 => break B256::from_slice(reader.take(32)?),
+            4 => {
+                if storage_account.is_some() && previous_storage_group.is_none() {
+                    return Err(ArtifactError::Invalid("storage account without groups"));
+                }
+                let address_hash = B256::from_slice(reader.take(32)?);
+                if storage_account.is_some_and(|previous| previous >= address_hash) {
+                    return Err(ArtifactError::Invalid("storage accounts not strictly ordered"));
+                }
+                if !headers.contains_key(&address_hash) {
+                    return Err(ArtifactError::Invalid("storage without header"));
+                }
+                storage_account = Some(address_hash);
+                previous_storage_group = None;
+            }
+            7 => {
+                if storage_account.is_some() && previous_storage_group.is_none() {
+                    return Err(ArtifactError::Invalid("storage account without groups"));
+                }
+                break B256::from_slice(reader.take(32)?);
+            }
             _ => return Err(ArtifactError::Invalid("unknown snapshot tag")),
         }
     };
@@ -604,5 +650,5 @@ pub(crate) fn restore_leaves<H: TreeHasher>(
             preimages.extend_from_slice(slot.as_slice());
         }
     }
-    decode_state::<H>(&headers, &leaves, &preimages, root, limits)
+    decode_state::<H>(headers, leaves, &preimages, root, limits)
 }

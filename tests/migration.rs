@@ -71,6 +71,47 @@ fn populated_state_roundtrips_canonically_regardless_of_insertion_order() {
 }
 
 #[test]
+fn snapshot_rejects_reordered_records_and_empty_storage_groups() {
+    let mut state = StateTree::<Blake3Hasher>::new();
+    for byte in [1, 2] {
+        let address = Address::repeat_byte(byte);
+        state.set_account(address, AccountData { nonce: 1, ..Default::default() }).unwrap();
+        for slot in [0, 1, 64, 65] {
+            state.set_storage(address, U256::from(slot), B256::from(U256::from(1))).unwrap();
+        }
+    }
+    let canonical = Artifacts::from_state(&state).unwrap();
+    let root = state.root();
+    // These headers each have a one-byte nonce and two one-byte inline values.
+    let header_len = 1 + 32 + 2 + 1 + 1 + 2 * 3;
+    let storage_offset = header_len * 2;
+    let group_offset = storage_offset + 33;
+    assert_eq!(canonical.snapshot[storage_offset], 4);
+    assert_eq!(canonical.snapshot[group_offset], 6);
+    assert!(canonical.restore::<Blake3Hasher>(root, DecodeLimits::default()).is_ok());
+
+    for (first, second, len) in [
+        (0, header_len, header_len),
+        (header_len - 6, header_len - 3, 3),
+        (group_offset + 34, group_offset + 37, 3),
+    ] {
+        let mut malformed = canonical.clone();
+        for i in 0..len {
+            malformed.snapshot.swap(first + i, second + i);
+        }
+        assert!(malformed.restore::<Blake3Hasher>(root, DecodeLimits::default()).is_err());
+    }
+
+    let mut malformed = canonical;
+    let storage_record = malformed.snapshot[storage_offset..group_offset].to_vec();
+    malformed.snapshot.splice(storage_offset..storage_offset, storage_record);
+    assert!(matches!(
+        malformed.restore::<Blake3Hasher>(root, DecodeLimits::default()),
+        Err(pbt::migration::ArtifactError::Invalid("storage account without groups"))
+    ));
+}
+
+#[test]
 fn snapshot_rejects_a_zero_delegation_target() {
     let address = Address::repeat_byte(1);
     let target = Address::repeat_byte(2);
