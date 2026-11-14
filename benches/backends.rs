@@ -1,5 +1,7 @@
 //! Identical-input sorted construction for the serial and parallel builders.
 
+#![allow(missing_docs)] // CodSpeed's macros generate undocumented public functions.
+
 use alloy_primitives::{B256, U256, keccak256};
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use pbt::{BinaryTree, Blake3Hasher};

@@ -1,5 +1,7 @@
 //! Core tree costs with deterministic Ethereum header keys and untimed setup.
 
+#![allow(missing_docs)] // CodSpeed's macros generate undocumented public functions.
+
 use alloy_primitives::{Address, B256};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use pbt::{BinaryTree, Blake3Hasher, key};

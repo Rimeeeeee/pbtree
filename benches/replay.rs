@@ -1,5 +1,7 @@
 //! Authenticated BAL replay and finality pruning; parent states and graph construction are untimed.
 
+#![allow(missing_docs)] // CodSpeed's macros generate undocumented public functions.
+
 use alloy_eip7928::{
     AccountChanges, BalanceChange, BlockAccessIndex, SlotChanges, StorageChange,
     compute_block_access_list_hash,

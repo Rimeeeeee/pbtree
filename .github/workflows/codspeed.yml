@@ -1,0 +1,37 @@
+name: CodSpeed
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  benchmarks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: "1.96.0"
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: 2
+      RAYON_NUM_THREADS: 4
+      CXXFLAGS: -g0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: Install cargo-codspeed
+        run: cargo install cargo-codspeed --version 6.0.0 --locked
+      - name: Build benchmarks
+        run: cargo codspeed build --locked --all-features -m simulation
+      - name: Measure benchmarks
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
+        with:
+          mode: simulation
+          run: cargo codspeed run
