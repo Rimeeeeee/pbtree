@@ -67,6 +67,13 @@ native state can use `DecodeLimits::native()` independently, allowing valid chai
 growth beyond import budgets. `StateTree::estimated_memory_size` supports cache
 budgets without scanning accounts or storage.
 
+With the `bal` feature, `ReplayChain` defaults to 1,024 layers and a 512 MiB estimated
+budget for unfinalized state. Use `ReplayChain::with_limits` to set both limits. Changed
+children are charged a full snapshot estimate and children sharing all of their parent's
+state are charged only for the layer record. The finalized anchor is outside the byte
+budget. If admission would exceed either limit, advance finality or start from a more
+recent finalized anchor. The estimate excludes temporary replay allocations.
+
 ```sh
 cargo test -p pbt
 cargo test -p pbt --all-features

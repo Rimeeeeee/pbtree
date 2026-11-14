@@ -3,7 +3,7 @@ use crate::{
     hash::{branch_hash, leaf_hash},
 };
 use alloy_primitives::B256;
-use std::{fmt, marker::PhantomData, sync::Arc};
+use std::{cmp::Ordering, collections::BTreeMap, fmt, marker::PhantomData, sync::Arc};
 
 /// A persistent, path-compressed binary Merkle tree.
 ///
@@ -74,6 +74,15 @@ impl<H: TreeHasher> BinaryTree<H> {
         self.len == 0
     }
 
+    #[cfg(feature = "bal")]
+    pub(crate) fn shares_root_with(&self, other: &Self) -> bool {
+        match (&self.root, &other.root) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
     /// Looks up the exact key. A prefix of a stored key is not a match.
     pub fn get(&self, key: &[u8]) -> Option<B256> {
         let mut node = self.root.as_deref()?;
@@ -107,7 +116,7 @@ impl<H: TreeHasher> BinaryTree<H> {
         validate_key(&key)?;
         let (root, previous) = match &self.root {
             None => (Node::leaf::<H>(key.into_boxed_slice(), value), None),
-            Some(root) => insert::<H>(root, &key, value)?,
+            Some(root) => insert::<H>(root, key, value)?,
         };
         release(self.root.replace(root));
         self.len += usize::from(previous.is_none());
@@ -125,14 +134,14 @@ impl<H: TreeHasher> BinaryTree<H> {
 
     /// Atomically applies final leaf values, with `None` deleting a key.
     ///
-    /// Repeated keys use their last update. Dense batches rebuild sorted leaves
-    /// once; small batches retain incremental path copying. Prefix validation is
+    /// Repeated keys use their last update. Dense batches of effective changes rebuild sorted
+    /// leaves once; small batches retain incremental path copying. Prefix validation is
     /// applied to the final set, so a batch can replace a key with its descendants.
     pub fn apply_updates(
         &mut self,
         updates: impl IntoIterator<Item = (Vec<u8>, Option<B256>)>,
     ) -> Result<(), TreeError> {
-        self.apply_updates_with(updates, Self::from_sorted_entries)
+        self.apply_ordered_updates(updates.into_iter().collect())
     }
 
     /// Atomically applies updates, hashing dense rebuilt subtrees in parallel.
@@ -142,34 +151,84 @@ impl<H: TreeHasher> BinaryTree<H> {
         &mut self,
         updates: impl IntoIterator<Item = (Vec<u8>, Option<B256>)>,
     ) -> Result<(), TreeError> {
+        self.apply_ordered_updates_parallel(updates.into_iter().collect())
+    }
+
+    pub(crate) fn apply_ordered_updates(
+        &mut self,
+        updates: BTreeMap<Vec<u8>, Option<B256>>,
+    ) -> Result<(), TreeError> {
+        self.apply_updates_with(updates, Self::from_sorted_entries)
+    }
+
+    #[cfg(feature = "parallel")]
+    pub(crate) fn apply_ordered_updates_parallel(
+        &mut self,
+        updates: BTreeMap<Vec<u8>, Option<B256>>,
+    ) -> Result<(), TreeError> {
         self.apply_updates_with(updates, Self::from_sorted_entries_parallel)
     }
 
     fn apply_updates_with(
         &mut self,
-        updates: impl IntoIterator<Item = (Vec<u8>, Option<B256>)>,
-        build: impl FnOnce(std::collections::BTreeMap<Vec<u8>, B256>) -> Result<Self, TreeError>,
+        mut updates: BTreeMap<Vec<u8>, Option<B256>>,
+        build: impl FnOnce(Vec<(Vec<u8>, B256)>) -> Result<Self, TreeError>,
     ) -> Result<(), TreeError> {
-        let updates: std::collections::BTreeMap<_, _> = updates.into_iter().collect();
         for key in updates.keys() {
             validate_key(key)?;
         }
         if updates.is_empty() {
             return Ok(());
         }
-        // Rebuilding the whole tree only pays off for sufficiently dense batches.
-        // Keep smaller block updates incremental even when they touch many leaves.
-        if self.is_empty() || (updates.len() >= 64 && updates.len().saturating_mul(4) >= self.len) {
-            let mut entries: std::collections::BTreeMap<_, _> =
-                self.entries().map(|(key, value)| (key.to_vec(), value)).collect();
+        if self.is_empty() {
+            let mut entries = Vec::with_capacity(updates.values().filter(|v| v.is_some()).count());
+            entries.extend(
+                updates.into_iter().filter_map(|(key, value)| value.map(|value| (key, value))),
+            );
+            *self = build(entries)?;
+            return Ok(());
+        }
+
+        let dense_threshold = self.len.div_ceil(4).max(64);
+        if updates.len() >= dense_threshold {
+            // A single ordered scan is cheaper than looking up each key in a dense batch.
+            // Filter before choosing the build path so an unchanged root keeps its nodes.
+            let mut entries = self.entries().peekable();
+            updates.retain(|key, value| {
+                while entries.peek().is_some_and(|(old, _)| *old < key.as_slice()) {
+                    entries.next();
+                }
+                let previous =
+                    entries.next_if(|(old, _)| *old == key.as_slice()).map(|(_, value)| value);
+                previous != *value
+            });
+        }
+        if updates.is_empty() {
+            return Ok(());
+        }
+        if updates.len() >= dense_threshold {
+            let mut entries = self.entries().peekable();
+            let mut merged = Vec::with_capacity(self.len);
             for (key, value) in updates {
+                while let Some(&(old, old_value)) = entries.peek() {
+                    match old.cmp(key.as_slice()) {
+                        Ordering::Less => {
+                            merged.push((old.to_vec(), old_value));
+                            entries.next();
+                        }
+                        Ordering::Equal => {
+                            entries.next();
+                            break;
+                        }
+                        Ordering::Greater => break,
+                    }
+                }
                 if let Some(value) = value {
-                    entries.insert(key, value);
-                } else {
-                    entries.remove(&key);
+                    merged.push((key, value));
                 }
             }
-            *self = build(entries)?;
+            merged.extend(entries.map(|(key, value)| (key.to_vec(), value)));
+            *self = build(merged)?;
         } else {
             let mut next = self.clone();
             for (key, value) in &updates {
@@ -191,10 +250,10 @@ impl<H: TreeHasher> BinaryTree<H> {
     pub fn from_sorted_entries(
         entries: impl IntoIterator<Item = (Vec<u8>, B256)>,
     ) -> Result<Self, TreeError> {
-        let entries: Vec<_> = entries.into_iter().collect();
+        let mut entries: Vec<_> = entries.into_iter().collect();
         validate_entries(&entries)?;
         Ok(Self {
-            root: (!entries.is_empty()).then(|| build::<H>(&entries, 0)),
+            root: (!entries.is_empty()).then(|| build::<H>(&mut entries, 0)),
             len: entries.len(),
             hasher: PhantomData,
         })
@@ -207,11 +266,11 @@ impl<H: TreeHasher> BinaryTree<H> {
     pub fn from_sorted_entries_parallel(
         entries: impl IntoIterator<Item = (Vec<u8>, B256)>,
     ) -> Result<Self, TreeError> {
-        let entries: Vec<_> = entries.into_iter().collect();
+        let mut entries: Vec<_> = entries.into_iter().collect();
         validate_entries(&entries)?;
         let budget = rayon::current_num_threads().next_power_of_two().trailing_zeros() as usize;
         Ok(Self {
-            root: (!entries.is_empty()).then(|| build_parallel::<H>(&entries, 0, budget)),
+            root: (!entries.is_empty()).then(|| build_parallel::<H>(&mut entries, 0, budget)),
             len: entries.len(),
             hasher: PhantomData,
         })
@@ -309,7 +368,7 @@ pub(crate) fn matches_prefix(key: &[u8], depth: usize, prefix: &[bool]) -> bool 
 
 fn insert<H: TreeHasher>(
     root: &Arc<Node>,
-    key: &[u8],
+    key: Vec<u8>,
     value: B256,
 ) -> Result<(Arc<Node>, Option<B256>), TreeError> {
     let mut node = root;
@@ -318,39 +377,37 @@ fn insert<H: TreeHasher>(
     let (mut replacement, previous) = loop {
         match node.as_ref() {
             Node::Leaf { key: stored, value: previous, .. } => {
-                if stored.as_ref() == key {
+                if stored.as_ref() == key.as_slice() {
                     if *previous == value {
                         return Ok((root.clone(), Some(*previous)));
                     }
-                    break (Node::leaf::<H>(key.into(), value), Some(*previous));
+                    break (Node::leaf::<H>(key.into_boxed_slice(), value), Some(*previous));
                 }
                 let limit = key.len().min(stored.len()) * 8;
                 let split = (depth..limit)
-                    .find(|i| bit(key, *i) != bit(stored, *i))
+                    .find(|i| bit(&key, *i) != bit(stored, *i))
                     .ok_or(TreeError::PrefixConflict)?;
-                let prefix = (depth..split).map(|i| bit(key, i).unwrap()).collect();
-                let leaf = Node::leaf::<H>(key.into(), value);
-                let (left, right) = if bit(key, split).unwrap() {
-                    (node.clone(), leaf)
-                } else {
-                    (leaf, node.clone())
-                };
+                let prefix = (depth..split).map(|i| bit(&key, i).unwrap()).collect();
+                let direction = bit(&key, split).unwrap();
+                let leaf = Node::leaf::<H>(key.into_boxed_slice(), value);
+                let (left, right) =
+                    if direction { (node.clone(), leaf) } else { (leaf, node.clone()) };
                 break (Node::branch::<H>(prefix, left, right), None);
             }
             Node::Branch { prefix, left, right, .. } => {
                 let matched = prefix
                     .iter()
                     .enumerate()
-                    .take_while(|(index, value)| bit(key, depth + index) == Some(**value))
+                    .take_while(|(index, value)| bit(&key, depth + index) == Some(**value))
                     .count();
-                let direction = bit(key, depth + matched).ok_or(TreeError::PrefixConflict)?;
+                let direction = bit(&key, depth + matched).ok_or(TreeError::PrefixConflict)?;
                 if matched < prefix.len() {
                     let survivor = Node::branch::<H>(
                         prefix[matched + 1..].to_vec(),
                         left.clone(),
                         right.clone(),
                     );
-                    let leaf = Node::leaf::<H>(key.into(), value);
+                    let leaf = Node::leaf::<H>(key.into_boxed_slice(), value);
                     let (left, right) = if direction { (survivor, leaf) } else { (leaf, survivor) };
                     break (Node::branch::<H>(prefix[..matched].to_vec(), left, right), None);
                 }
@@ -414,9 +471,9 @@ fn remove<H: TreeHasher>(root: &Arc<Node>, key: &[u8]) -> (Option<Arc<Node>>, Op
     (replacement, Some(previous))
 }
 
-fn build<H: TreeHasher>(entries: &[(Vec<u8>, B256)], depth: usize) -> Arc<Node> {
+fn build<H: TreeHasher>(entries: &mut [(Vec<u8>, B256)], depth: usize) -> Arc<Node> {
     enum Task<'a> {
-        Build(&'a [(Vec<u8>, B256)], usize),
+        Build(&'a mut [(Vec<u8>, B256)], usize),
         Branch(Vec<bool>),
     }
     let mut tasks = vec![Task::Build(entries, depth)];
@@ -426,7 +483,7 @@ fn build<H: TreeHasher>(entries: &[(Vec<u8>, B256)], depth: usize) -> Arc<Node> 
             Task::Build(entries, depth) => {
                 if entries.len() == 1 {
                     nodes.push(Node::leaf::<H>(
-                        entries[0].0.clone().into_boxed_slice(),
+                        std::mem::take(&mut entries[0].0).into_boxed_slice(),
                         entries[0].1,
                     ));
                     continue;
@@ -438,9 +495,10 @@ fn build<H: TreeHasher>(entries: &[(Vec<u8>, B256)], depth: usize) -> Arc<Node> 
                     .expect("validated prefix-free keys");
                 let middle = entries.partition_point(|(key, _)| !bit(key, split).unwrap());
                 let prefix = (depth..split).map(|i| bit(first, i).unwrap()).collect();
+                let (left, right) = entries.split_at_mut(middle);
                 tasks.push(Task::Branch(prefix));
-                tasks.push(Task::Build(&entries[middle..], split + 1));
-                tasks.push(Task::Build(&entries[..middle], split + 1));
+                tasks.push(Task::Build(right, split + 1));
+                tasks.push(Task::Build(left, split + 1));
             }
             Task::Branch(prefix) => {
                 let right = nodes.pop().unwrap();
@@ -454,7 +512,7 @@ fn build<H: TreeHasher>(entries: &[(Vec<u8>, B256)], depth: usize) -> Arc<Node> 
 
 #[cfg(feature = "parallel")]
 fn build_parallel<H: TreeHasher>(
-    entries: &[(Vec<u8>, B256)],
+    entries: &mut [(Vec<u8>, B256)],
     depth: usize,
     budget: usize,
 ) -> Arc<Node> {
@@ -468,9 +526,30 @@ fn build_parallel<H: TreeHasher>(
         .expect("validated prefix-free keys");
     let middle = entries.partition_point(|(key, _)| !bit(key, split).unwrap());
     let prefix = (depth..split).map(|index| bit(first, index).unwrap()).collect();
+    let (left, right) = entries.split_at_mut(middle);
     let (left, right) = rayon::join(
-        || build_parallel::<H>(&entries[..middle], split + 1, budget - 1),
-        || build_parallel::<H>(&entries[middle..], split + 1, budget - 1),
+        || build_parallel::<H>(left, split + 1, budget - 1),
+        || build_parallel::<H>(right, split + 1, budget - 1),
     );
     Node::branch::<H>(prefix, left, right)
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    #[test]
+    fn dense_noops_keep_the_existing_nodes() {
+        let entries = (0..256u16).map(|key| (key.to_be_bytes().to_vec(), B256::ZERO));
+        let mut tree = BinaryTree::<Blake3Hasher>::from_sorted_entries(entries.clone()).unwrap();
+        let original = tree.clone();
+        let updates = entries.take(64).map(|(key, value)| (key, Some(value))).collect::<Vec<_>>();
+        tree.apply_updates(updates.iter().cloned()).unwrap();
+        assert!(Arc::ptr_eq(tree.root.as_ref().unwrap(), original.root.as_ref().unwrap()));
+        #[cfg(feature = "parallel")]
+        {
+            tree.apply_updates_parallel(updates).unwrap();
+            assert!(Arc::ptr_eq(tree.root.as_ref().unwrap(), original.root.as_ref().unwrap()));
+        }
+    }
 }

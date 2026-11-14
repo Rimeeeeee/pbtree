@@ -22,6 +22,8 @@ pub struct StateTree<H = Blake3Hasher> {
     // Keep ordinary snapshots small; only an active batch allocates this header.
     #[allow(clippy::box_collection)]
     pending: Option<Box<BTreeMap<Vec<u8>, Option<B256>>>>,
+    #[cfg(any(feature = "bal", feature = "persistence"))]
+    total_code_bytes: u128,
     #[cfg(feature = "persistence")]
     metadata: Arc<PersistenceMetadata>,
 }
@@ -31,7 +33,6 @@ pub struct StateTree<H = Blake3Hasher> {
 struct PersistenceMetadata {
     addresses: OrdMap<B256, Address>,
     empty_accounts: usize,
-    total_code_bytes: u128,
     code_sizes: OrdMap<usize, usize>,
 }
 
@@ -43,6 +44,8 @@ impl<H: TreeHasher> Default for StateTree<H> {
             codes: OrdMap::default(),
             storages: OrdMap::default(),
             pending: None,
+            #[cfg(any(feature = "bal", feature = "persistence"))]
+            total_code_bytes: 0,
             #[cfg(feature = "persistence")]
             metadata: Arc::default(),
         }
@@ -116,7 +119,7 @@ impl<H: TreeHasher> StateTree<H> {
 
     pub(crate) fn finish_batch(&mut self) -> Result<(), StateError> {
         if let Some(updates) = self.pending.take() {
-            self.tree.apply_updates(*updates)?;
+            self.tree.apply_ordered_updates(*updates)?;
         }
         Ok(())
     }
@@ -124,9 +127,17 @@ impl<H: TreeHasher> StateTree<H> {
     #[cfg(feature = "parallel")]
     pub(crate) fn finish_batch_parallel(&mut self) -> Result<(), StateError> {
         if let Some(updates) = self.pending.take() {
-            self.tree.apply_updates_parallel(*updates)?;
+            self.tree.apply_ordered_updates_parallel(*updates)?;
         }
         Ok(())
+    }
+
+    #[cfg(feature = "migration")]
+    pub(crate) fn pending_leaves(&self) -> impl Iterator<Item = (&[u8], B256)> {
+        debug_assert!(self.tree.is_empty());
+        self.pending.as_ref().into_iter().flat_map(|updates| {
+            updates.iter().filter_map(|(key, value)| value.map(|value| (key.as_slice(), value)))
+        })
     }
 
     fn remove_leaf(&mut self, key: &[u8]) {
@@ -153,6 +164,11 @@ impl<H: TreeHasher> StateTree<H> {
         self.storages.get(&address).into_iter().flat_map(|slots| slots.values().copied())
     }
 
+    #[cfg(feature = "migration")]
+    pub(crate) fn storage_entry_count(&self, address: Address) -> usize {
+        self.storages.get(&address).map_or(0, OrdMap::len)
+    }
+
     /// Whether any nonzero storage exists for this account, inline or in the storage zone.
     pub fn has_storage(&self, address: Address) -> bool {
         self.storages.contains_key(&address)
@@ -175,7 +191,7 @@ impl<H: TreeHasher> StateTree<H> {
     fn set_account_normalized(
         &mut self,
         address: Address,
-        account: AccountData,
+        mut account: AccountData,
     ) -> Result<(), StateError> {
         let basic = account.basic_data()?;
         let previous = self.accounts.get(&address).cloned();
@@ -194,6 +210,12 @@ impl<H: TreeHasher> StateTree<H> {
         }
         let position = key::account_hash::<H>(address);
         let same_code = previous.as_ref().is_some_and(|previous| previous.code == account.code);
+        if let Some(previous) = &previous
+            && same_code
+            && previous.code.as_ptr() != account.code.as_ptr()
+        {
+            account.code = previous.code.clone();
+        }
         let previous_hash =
             (!same_code).then(|| previous.as_ref().and_then(AccountData::contract_hash)).flatten();
         let next_hash = (!same_code).then(|| account.contract_hash()).flatten();
@@ -208,11 +230,14 @@ impl<H: TreeHasher> StateTree<H> {
                     .or_insert_with(|| CodeReference { count: 0, code: account.code.clone() });
                 reference.count += 1;
                 if reference.count == 1 {
+                    #[cfg(any(feature = "bal", feature = "persistence"))]
+                    {
+                        self.total_code_bytes += account.code.len() as u128;
+                    }
                     #[cfg(feature = "persistence")]
                     {
                         let size = account.code.len();
                         let metadata = Arc::make_mut(&mut self.metadata);
-                        metadata.total_code_bytes += size as u128;
                         *metadata.code_sizes.entry(size).or_default() += 1;
                     }
                     let chunks = key::chunkify_code(&account.code);
@@ -220,6 +245,10 @@ impl<H: TreeHasher> StateTree<H> {
                     for (key, chunk) in keys.zip(chunks) {
                         self.write(key.to_vec(), chunk);
                     }
+                } else if reference.code.as_ptr() != account.code.as_ptr()
+                    && reference.code == account.code
+                {
+                    account.code = reference.code.clone();
                 }
             }
         }
@@ -346,10 +375,13 @@ impl<H: TreeHasher> StateTree<H> {
             reference.count -= 1;
             if reference.count == 0 {
                 let size = entry.remove().code.len();
+                #[cfg(any(feature = "bal", feature = "persistence"))]
+                {
+                    self.total_code_bytes -= size as u128;
+                }
                 #[cfg(feature = "persistence")]
                 {
                     let metadata = Arc::make_mut(&mut self.metadata);
-                    metadata.total_code_bytes -= size as u128;
                     let count = metadata.code_sizes.get_mut(&size).expect("code size is tracked");
                     *count -= 1;
                     if *count == 0 {
@@ -392,22 +424,31 @@ impl<H: TreeHasher> StateTree<H> {
     pub(crate) fn validation_stats(&self) -> (usize, u128, usize) {
         (
             self.metadata.empty_accounts,
-            self.metadata.total_code_bytes,
+            self.total_code_bytes,
             self.metadata.code_sizes.get_max().map_or(0, |(size, _)| *size),
         )
     }
 
+    #[cfg(feature = "bal")]
+    pub(crate) fn shares_state_with(&self, other: &Self) -> bool {
+        self.tree.shares_root_with(&other.tree)
+            && self.accounts.ptr_eq(&other.accounts)
+            && self.codes.ptr_eq(&other.codes)
+            && self.storages.ptr_eq(&other.storages)
+    }
+
     /// Estimates resident bytes for cache budgeting without scanning the state.
     ///
-    /// Counts shared nodes and code in each snapshot independently, so summing
-    /// snapshots deliberately overcounts sharing. This is not allocator telemetry.
-    #[cfg(feature = "persistence")]
+    /// Counts shared nodes and code in each snapshot independently, so summing snapshots
+    /// overcounts sharing. The estimate uses logical bytecode lengths and excludes allocator
+    /// overhead and any extra capacity in caller-supplied byte buffers.
+    #[cfg(any(feature = "bal", feature = "persistence"))]
     pub fn estimated_memory_size(&self) -> usize {
         self.tree
             .len()
             .saturating_mul(512)
             .saturating_add(self.accounts.len().saturating_mul(512))
-            .saturating_add(usize::try_from(self.metadata.total_code_bytes).unwrap_or(usize::MAX))
+            .saturating_add(usize::try_from(self.total_code_bytes).unwrap_or(usize::MAX))
     }
 }
 
