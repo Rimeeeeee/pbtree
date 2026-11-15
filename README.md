@@ -136,17 +136,12 @@ comparisons once the repository is connected and `main` has a baseline run.
 CI fixes Rayon at four workers so baseline and pull request runs use the same
 task partitioning. CodSpeed estimates CPU work in simulation mode. Serial and
 parallel builds can do similar CPU work even when the parallel build finishes
-sooner. Run the benchmarks locally to measure elapsed time for parallel builds
-or RocksDB I/O. Set `RAYON_NUM_THREADS=4` in your shell to match CI's pool size.
+sooner. The persistence job also runs under CodSpeed Walltime on a Macro Runner
+to measure elapsed time for RocksDB I/O. Set `RAYON_NUM_THREADS=4` in your shell
+to match CI's pool size.
 
-```sh
-cargo bench --locked --benches                                     # tree and state
-cargo bench --locked --benches --all-features                      # all six suites
-cargo bench --locked --features parallel --bench backends          # serial vs. Rayon
-```
 
-The full suite adds migration, BAL replay, RocksDB persistence, and parallel
-construction. The persistence suite requires a C++ compiler and libclang.
+The persistence suite requires a C++ compiler and libclang.
 For a local check of the CodSpeed harness on Linux:
 
 ```sh

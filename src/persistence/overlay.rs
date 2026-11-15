@@ -680,6 +680,7 @@ fn invalid_path() -> NodeError {
 mod tests {
     use super::*;
     use crate::{AccountData, Blake3Hasher};
+    use proptest::prelude::*;
 
     type Cache = SubtreeCache<Blake3Hasher>;
 
@@ -810,6 +811,152 @@ mod tests {
         assert_eq!(restored.root(), expected.root());
         assert!(restored.tree().entries().eq(expected.tree().entries()));
         assert_eq!(restored.account(c), expected.account(c));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+        #[test]
+        fn overlay_matches_eager_across_random_checkpoint_boundaries(
+            steps in prop::collection::vec(
+                (
+                    0u8..8,
+                    0u8..8,
+                    any::<bool>(),
+                    prop::collection::vec((0usize..8, 0u8..5), 0..5),
+                    0u8..8,
+                ),
+                24..49,
+            ),
+            cache_entries in 0usize..33,
+        ) {
+            const SLOTS: [u64; 8] = [0, 63, 64, 65, 255, 256, 257, u64::MAX];
+            let directory = tempfile::tempdir().unwrap();
+            let limits = DecodeLimits::native();
+            let shared = Bytes::from_static(&[0x60, 1, 0]);
+            let other_code = Bytes::from_static(&[0x60, 2, 0]);
+            let addresses = std::array::from_fn::<_, 8, _>(|i| Address::repeat_byte(i as u8 + 1));
+            let mut expected = StateTree::<Blake3Hasher>::new();
+            for address in &addresses[..2] {
+                expected.apply_account(*address, Some(account(1, shared.clone()))).unwrap();
+                for slot in [0, 64, u64::MAX] {
+                    expected.set_storage(*address, U256::from(slot), B256::repeat_byte(1)).unwrap();
+                }
+            }
+            let mut db = NodeDatabase::open(directory.path()).unwrap();
+            let mut base = expected.root();
+            let overlay_at = |db: &Arc<NodeDatabase>, root| {
+                let _guard = db.mutation.lock().unwrap();
+                Arc::new(Cache::new(db.clone(), cache_entries)).checkpoint(root).unwrap().overlay()
+            };
+            {
+                let _guard = db.mutation.lock().unwrap();
+                db.save(&expected, limits).unwrap();
+            }
+            let mut overlay = overlay_at(&db, base);
+            let len = steps.len();
+            for (index, (address, operation, wipe, slots, boundary)) in steps.into_iter().enumerate() {
+                let address = addresses[usize::from(address)];
+                let previous = expected.account(address);
+                let previous_code = previous.map(|account| &account.code);
+                let before = (overlay.root(), overlay.leaf_count());
+                let mut needs_full = false;
+                if operation >= 6 {
+                    let missing_code = B256::repeat_byte(0xfe);
+                    let invalid = AccountUpdate {
+                        nonce: 1,
+                        balance: if operation == 6 { U256::MAX } else { U256::from(1) },
+                        code: if operation == 6 {
+                            CodeUpdate::Bytes(Bytes::new())
+                        } else {
+                            CodeUpdate::Retain(missing_code)
+                        },
+                    };
+                    let result = overlay.update_account(address, Some(invalid), wipe, []);
+                    if operation == 6 {
+                        prop_assert!(matches!(result, Err(OverlayError::State(StateError::BalanceOverflow))));
+                    } else {
+                        prop_assert!(matches!(result, Err(OverlayError::MissingCode(hash)) if hash == missing_code));
+                    }
+                    prop_assert_eq!((overlay.root(), overlay.leaf_count()), before);
+                } else {
+                    let code = match operation {
+                        1 => shared.clone(),
+                        2 => other_code.clone(),
+                        3 | 4 => {
+                            let target = if operation == 3 { addresses[1] } else { Address::ZERO };
+                            Bytes::copy_from_slice(&key::encode_delegation(target)[..key::DELEGATION_SIZE])
+                        }
+                        5 => previous_code.cloned().unwrap_or_default(),
+                        _ => Bytes::new(),
+                    };
+                    let next = (operation != 0).then(|| account(index as u64 + 2, code));
+                    let change = next.as_ref().map(|account| {
+                        let mut change = update(account);
+                        if operation == 5 && previous.is_some() {
+                            change.code = CodeUpdate::Retain(keccak256(&account.code));
+                        }
+                        change
+                    });
+                    let code_changed = next.as_ref().map(|account| &account.code) != previous_code;
+                    needs_full = code_changed &&
+                        previous_code.is_some_and(|code| *code == shared || *code == other_code);
+                    let slots = slots.into_iter().map(|(slot, value)| {
+                        (U256::from(SLOTS[slot]), B256::repeat_byte(value))
+                    }).collect::<Vec<_>>();
+                    let result = overlay.update_account(address, change, wipe, slots.iter().copied());
+                    if needs_full {
+                        prop_assert!(matches!(result, Err(OverlayError::NeedsFullState)));
+                        prop_assert_eq!((overlay.root(), overlay.leaf_count()), before);
+                    } else {
+                        prop_assert!(result.is_ok(), "{result:?}");
+                    }
+
+                    if wipe {
+                        expected.clear_storage(address);
+                    }
+                    expected.apply_account(address, next).unwrap();
+                    if operation != 0 {
+                        for (slot, value) in slots {
+                            expected.set_storage(address, slot, value).unwrap();
+                        }
+                    }
+                }
+
+                let root = expected.root();
+                let count = expected.tree().len();
+                if !needs_full {
+                    prop_assert_eq!((overlay.root(), overlay.leaf_count()), (root, count));
+                }
+                if needs_full || boundary <= 1 || index + 1 == len {
+                    {
+                        let _guard = db.mutation.lock().unwrap();
+                        if needs_full {
+                            db.save(&expected, limits).unwrap();
+                        } else {
+                            overlay.save(&db, limits).unwrap();
+                        }
+                    }
+                    drop(overlay);
+                    {
+                        let _guard = db.mutation.lock().unwrap();
+                        if base != root {
+                            db.remove_root(base).unwrap();
+                        }
+                        if boundary == 0 {
+                            db.collect::<Blake3Hasher>().unwrap();
+                        }
+                    }
+                    drop(db);
+                    db = NodeDatabase::open(directory.path()).unwrap();
+                    let restored = db.load::<Blake3Hasher>(root, count, limits).unwrap();
+                    prop_assert_eq!(restored.root(), root);
+                    prop_assert!(restored.tree().entries().eq(expected.tree().entries()));
+                    prop_assert!(restored.accounts().all(|(address, data)| expected.account(Address(*address)) == Some(data)));
+                    base = root;
+                    overlay = overlay_at(&db, base);
+                }
+            }
+        }
     }
 
     #[test]

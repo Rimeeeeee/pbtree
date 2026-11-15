@@ -8,7 +8,9 @@ use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, 
 use pbt::{
     AccountData, Blake3Hasher, StateTree, StateUpdate,
     migration::DecodeLimits,
-    persistence::{AccountUpdate, CodeUpdate, NodeDatabase, SubtreeCache},
+    persistence::{
+        AccountUpdate, CodeUpdate, NodeDatabase, OverlayError, StateOverlay, SubtreeCache,
+    },
 };
 use std::{hint::black_box, sync::Arc};
 
@@ -161,92 +163,111 @@ fn proofs(c: &mut Criterion) {
     group.finish();
 }
 
+fn apply_eager(state: &mut State, targets: &[Address]) {
+    state
+        .apply_batch(targets.iter().flat_map(|&address| {
+            [
+                StateUpdate::Account {
+                    address,
+                    account: Some(AccountData {
+                        nonce: 2,
+                        balance: U256::from(100),
+                        code: Bytes::from_static(&[0x60; 64]),
+                    }),
+                },
+                StateUpdate::Storage { address, slot: U256::from(64), value: B256::repeat_byte(2) },
+            ]
+        }))
+        .unwrap();
+}
+
+fn apply_disk(
+    db: &NodeDatabase,
+    cache: &Arc<SubtreeCache<Blake3Hasher>>,
+    root: B256,
+    targets: &[Address],
+    code_hash: B256,
+) -> StateOverlay<Blake3Hasher> {
+    let checkpoint = {
+        let _mutation = db.mutation.lock().unwrap();
+        cache.checkpoint(root).unwrap()
+    };
+    let mut state = checkpoint.overlay();
+    for &address in targets {
+        state
+            .update_account(
+                address,
+                Some(AccountUpdate {
+                    nonce: 2,
+                    balance: U256::from(100),
+                    code: CodeUpdate::Retain(code_hash),
+                }),
+                false,
+                [(U256::from(64), B256::repeat_byte(2))],
+            )
+            .unwrap();
+    }
+    state
+}
+
 fn execution(c: &mut Criterion) {
     let limits = DecodeLimits::native();
+    let code_hash = keccak256([0x60; 64]);
     let mut group = c.benchmark_group("persistence/execution");
-    group.throughput(Throughput::Elements(64));
-    for size in [4_096, 16_384] {
+    for (size, writes) in [(4_096, 64), (16_384, 64), (4_096, 4_096)] {
+        group.throughput(Throughput::Elements(writes as u64));
         let state = populated_state(size);
         let root = state.root();
         let leaves = state.tree().len();
         let fixture = Fixture::new(&state);
         let db = &fixture.database;
-
-        let targets: Vec<_> = (0..64).map(|index| address(index * size / 64)).collect();
-        let slot = U256::from(64);
-        let value = B256::repeat_byte(2);
-        let code_hash = keccak256([0x60; 64]);
-        let apply_eager = |state: &mut State| {
-            state
-                .apply_batch(targets.iter().flat_map(|&address| {
-                    [
-                        StateUpdate::Account {
-                            address,
-                            account: Some(AccountData {
-                                nonce: 2,
-                                balance: U256::from(100),
-                                code: Bytes::from_static(&[0x60; 64]),
-                            }),
-                        },
-                        StateUpdate::Storage { address, slot, value },
-                    ]
-                }))
-                .unwrap();
-        };
-        let apply_disk = |cache: &Arc<SubtreeCache<Blake3Hasher>>| {
-            let checkpoint = {
-                let _mutation = db.mutation.lock().unwrap();
-                cache.checkpoint(root).unwrap()
-            };
-            let mut state = checkpoint.overlay();
-            for &address in &targets {
-                state
-                    .update_account(
-                        address,
-                        Some(AccountUpdate {
-                            nonce: 2,
-                            balance: U256::from(100),
-                            code: CodeUpdate::Retain(code_hash),
-                        }),
-                        false,
-                        [(slot, value)],
-                    )
-                    .unwrap();
-            }
-            state
-        };
+        let targets: Vec<_> = (0..writes).map(|index| address(index * size / writes)).collect();
         let cache = Arc::new(SubtreeCache::new(db.clone(), 16_384));
         let mut expected = state.clone();
-        apply_eager(&mut expected);
-        assert_eq!(apply_disk(&cache).root(), expected.root());
-        drop(expected);
+        apply_eager(&mut expected, &targets);
+        let actual = apply_disk(db, &cache, root, &targets, code_hash);
+        assert_eq!(actual.root(), expected.root());
+        assert_eq!(actual.leaf_count(), expected.tree().len());
+        drop((actual, expected));
 
-        group.bench_function(BenchmarkId::new("cold_parent_eager", size), |b| {
+        let (eager_name, overlay_name) = if size == writes {
+            ("cold_dense_eager", "cold_dense_overlay")
+        } else {
+            ("cold_parent_eager", "cold_parent_overlay")
+        };
+        group.bench_function(BenchmarkId::new(eager_name, size), |b| {
             b.iter_batched(
                 || (),
                 |()| {
                     let mut restored = db.load::<Blake3Hasher>(root, leaves, limits).unwrap();
-                    apply_eager(&mut restored);
+                    apply_eager(&mut restored, &targets);
                     black_box(restored)
                 },
                 BatchSize::PerIteration,
             );
         });
-        group.bench_function(BenchmarkId::new("cold_parent_overlay", size), |b| {
+        group.bench_function(BenchmarkId::new(overlay_name, size), |b| {
             b.iter_batched(
                 || Arc::new(SubtreeCache::new(db.clone(), 16_384)),
-                |cache| black_box(apply_disk(&cache)),
+                |cache| black_box(apply_disk(db, &cache, root, &targets, code_hash)),
                 BatchSize::PerIteration,
             );
         });
+        if size == writes {
+            continue;
+        }
         group.bench_function(BenchmarkId::new("warm_parent_overlay", size), |b| {
-            b.iter_batched(|| (), |()| black_box(apply_disk(&cache)), BatchSize::PerIteration);
+            b.iter_batched(
+                || (),
+                |()| black_box(apply_disk(db, &cache, root, &targets, code_hash)),
+                BatchSize::PerIteration,
+            );
         });
         group.bench_function(BenchmarkId::new("warm_parent_eager", size), |b| {
             b.iter_batched(
                 || state.clone(),
                 |mut state| {
-                    apply_eager(&mut state);
+                    apply_eager(&mut state, &targets);
                     black_box(state)
                 },
                 BatchSize::PerIteration,
@@ -256,5 +277,135 @@ fn execution(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, saves, loads, proofs, execution);
+fn fallback(c: &mut Criterion) {
+    let size = 4_096;
+    let state = populated_state(size);
+    let fixture = Fixture::new(&state);
+    let db = &fixture.database;
+    let root = state.root();
+    let count = state.tree().len();
+    let target = address(size / 2);
+    let limits = DecodeLimits::native();
+    let remove = |mut parent: State| {
+        parent.apply_account(target, None).unwrap();
+        parent
+    };
+    let overlay_then_restore = |cache: Arc<SubtreeCache<Blake3Hasher>>| {
+        let checkpoint = {
+            let _mutation = db.mutation.lock().unwrap();
+            cache.checkpoint(root).unwrap()
+        };
+        assert!(matches!(
+            checkpoint.overlay().update_account(target, None, false, []),
+            Err(OverlayError::NeedsFullState)
+        ));
+        remove(checkpoint.restore(limits).unwrap())
+    };
+    let new_cache = || Arc::new(SubtreeCache::new(db.clone(), 16_384));
+    let expected = remove(state);
+    let fallback = overlay_then_restore(new_cache());
+    assert_eq!(fallback.root(), expected.root());
+    assert_eq!(fallback.tree().len(), expected.tree().len());
+    assert!(fallback.account(address(0)).is_some_and(|account| !account.code.is_empty()));
+    drop((expected, fallback));
+
+    let mut group = c.benchmark_group("persistence/fallback");
+    group.bench_function(BenchmarkId::new("cold_code_removal_eager", size), |b| {
+        b.iter_batched(
+            || (),
+            |()| black_box(remove(db.load::<Blake3Hasher>(root, count, limits).unwrap())),
+            BatchSize::PerIteration,
+        );
+    });
+    group.bench_function(BenchmarkId::new("cold_code_removal_overlay", size), |b| {
+        b.iter_batched(
+            new_cache,
+            |cache| black_box(overlay_then_restore(cache)),
+            BatchSize::PerIteration,
+        );
+    });
+    group.finish();
+}
+
+fn commits(c: &mut Criterion) {
+    let limits = DecodeLimits::native();
+    let size = 4_096;
+    let state = populated_state(size);
+    let targets: Vec<_> = (0..64).map(|index| address(index * size / 64)).collect();
+    let mut expected = state.clone();
+    apply_eager(&mut expected, &targets);
+    let root = expected.root();
+    let count = expected.tree().len();
+    let code_hash = keccak256([0x60; 64]);
+
+    let prepare_eager = || (Fixture::new(&state), expected.clone());
+    let prepare_overlay = || {
+        let fixture = Fixture::new(&state);
+        let cache = Arc::new(SubtreeCache::new(fixture.database.clone(), 16_384));
+        let child = apply_disk(&fixture.database, &cache, state.root(), &targets, code_hash);
+        assert_eq!(child.root(), root);
+        assert_eq!(child.leaf_count(), count);
+        (fixture, child)
+    };
+    let save_eager = |(fixture, child): (Fixture, State)| {
+        {
+            let _mutation = fixture.database.mutation.lock().unwrap();
+            fixture.database.save(&child, limits).unwrap();
+        }
+        (child, fixture)
+    };
+    let save_overlay = |(fixture, child): (Fixture, StateOverlay<Blake3Hasher>)| {
+        {
+            let _mutation = fixture.database.mutation.lock().unwrap();
+            child.save(&fixture.database, limits).unwrap();
+        }
+        (child, fixture)
+    };
+    let reopen = |Fixture { database, _directory: directory }| {
+        drop(database);
+        let database = NodeDatabase::open(directory.path()).unwrap();
+        let state = database.load::<Blake3Hasher>(root, count, limits).unwrap();
+        // Return the database before its directory so teardown stays outside timing.
+        black_box((database, directory, state))
+    };
+
+    let mut group = c.benchmark_group("persistence/commit");
+    group.throughput(Throughput::Elements(64));
+    group.bench_function(BenchmarkId::new("eager", size), |b| {
+        b.iter_batched(prepare_eager, save_eager, BatchSize::PerIteration);
+    });
+    group.bench_function(BenchmarkId::new("overlay", size), |b| {
+        b.iter_batched(prepare_overlay, save_overlay, BatchSize::PerIteration);
+    });
+    group.finish();
+
+    let mut group = c.benchmark_group("persistence/commit_and_reopen");
+    group.throughput(Throughput::Elements(64));
+    group.bench_function(BenchmarkId::new("eager", size), |b| {
+        b.iter_batched(
+            prepare_eager,
+            |prepared| {
+                let (child, fixture) = save_eager(prepared);
+                drop(child);
+                reopen(fixture)
+            },
+            BatchSize::PerIteration,
+        );
+    });
+    group.bench_function(BenchmarkId::new("overlay", size), |b| {
+        b.iter_batched(
+            prepare_overlay,
+            |prepared| {
+                let (child, fixture) = save_overlay(prepared);
+                // Reopening requires releasing the child's parent lease first.
+                drop(child);
+                reopen(fixture)
+            },
+            BatchSize::PerIteration,
+        );
+    });
+    group.finish();
+}
+
+criterion_group!(benches, saves, loads, proofs, execution, fallback, commits);
 criterion_main!(benches);
