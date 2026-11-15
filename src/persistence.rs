@@ -18,6 +18,11 @@ use std::{
     },
 };
 
+mod overlay;
+
+pub use overlay::{
+    AccountUpdate, CodeUpdate, DiskCheckpoint, OverlayError, StateOverlay, SubtreeCache,
+};
 pub use rocksdb;
 
 /// Content-addressed native trie storage shared across handles to the same directory.
@@ -43,6 +48,9 @@ impl NodeDatabase {
     pub fn open(path: &Path) -> Result<Arc<Self>, NodeError> {
         // RocksDB owns an exclusive file lock. Reopening a store in this process must share it.
         static DATABASES: OnceLock<Mutex<BTreeMap<PathBuf, Weak<NodeDatabase>>>> = OnceLock::new();
+        #[cfg(windows)]
+        let opening_path = std::path::absolute(path)
+            .map_err(|source| NodeError::Io { path: path.to_path_buf(), source })?;
         let path = path
             .canonicalize()
             .map_err(|source| NodeError::Io { path: path.to_path_buf(), source })?;
@@ -54,7 +62,11 @@ impl NodeDatabase {
         }
         let mut options = Options::default();
         options.create_if_missing(true);
-        let db = DB::open_cf(&options, path.join("nodes"), ["default"])?;
+        // RocksDB appends names using forward slashes, which Win32 does not
+        // normalize for the verbatim path returned by canonicalize.
+        #[cfg(not(windows))]
+        let opening_path = &path;
+        let db = DB::open_cf(&options, opening_path.join("nodes"), ["default"])?;
         match db.get(b"schema")? {
             Some(version) if version.as_slice() == STORE_VERSION.to_be_bytes() => {}
             Some(version) if version.as_slice() != 2u32.to_be_bytes() => {
@@ -140,24 +152,17 @@ impl NodeDatabase {
                 stack.push((left, false));
                 continue;
             }
-            let mut encoded = Vec::new();
-            match node {
+            let encoded = match node {
                 Node::Leaf { key, value, .. } => {
-                    encoded.push(LEAF);
-                    encoded.extend_from_slice(
-                        &u16::try_from(key.len())
-                            .map_err(|_| ArtifactError::ResourceLimit)?
-                            .to_be_bytes(),
-                    );
-                    encoded.extend_from_slice(key);
-                    encoded.extend_from_slice(value.as_slice());
-                    if key[0] == key::ACCOUNT_ZONE
+                    let mut bytes = [0; 32];
+                    let preimage = if key[0] == key::ACCOUNT_ZONE
                         && matches!(key[33], CODE_HASH_LEAF_KEY | DELEGATION_LEAF_KEY)
                     {
                         let address = state
                             .address_preimage(B256::from_slice(&key[1..33]))
                             .ok_or(ArtifactError::Invalid("missing account preimage"))?;
-                        encoded.extend_from_slice(address.as_slice());
+                        bytes[..20].copy_from_slice(address.as_slice());
+                        Some(&bytes[..20])
                     } else if key[0] == key::STORAGE_ZONE {
                         let address = state
                             .address_preimage(B256::from_slice(&key[1..33]))
@@ -165,25 +170,17 @@ impl NodeDatabase {
                         let slot = state
                             .storage_preimage(address, key)
                             .ok_or(ArtifactError::Invalid("missing storage preimage"))?;
-                        encoded.extend_from_slice(&slot.to_be_bytes::<32>());
-                    }
+                        bytes = slot.to_be_bytes::<32>();
+                        Some(bytes.as_slice())
+                    } else {
+                        None
+                    };
+                    encode_leaf(key, *value, preimage)
                 }
                 Node::Branch { prefix, left, right, .. } => {
-                    encoded.push(BRANCH);
-                    encoded.extend_from_slice(
-                        &u16::try_from(prefix.len())
-                            .map_err(|_| ArtifactError::ResourceLimit)?
-                            .to_be_bytes(),
-                    );
-                    let start = encoded.len();
-                    encoded.resize(start + prefix.len().div_ceil(8), 0);
-                    for (index, bit) in prefix.iter().enumerate() {
-                        encoded[start + index / 8] |= u8::from(*bit) << (7 - index % 8);
-                    }
-                    encoded.extend_from_slice(left.hash().as_slice());
-                    encoded.extend_from_slice(right.hash().as_slice());
+                    encode_branch(prefix, left.hash(), right.hash())
                 }
-            }
+            };
             batch.put(database_key(NODE, hash), encoded);
             // During a cooperative sweep, publish only complete, marked subtrees.
             // Unmarked existing parents may already have lost children; rebuild
@@ -751,6 +748,31 @@ const WRITE_BATCH_BYTES: usize = 8 * 1024 * 1024;
 const GC_MARK_BYTES: usize = 1024 * 1024;
 const GC_SWEEP_NODES: usize = 1024;
 const MAX_NODE_BYTES: usize = 3 + STORAGE_KEY_LENGTH + 64;
+
+fn encode_leaf(key: &[u8], value: B256, preimage: Option<&[u8]>) -> Vec<u8> {
+    let preimage = preimage.unwrap_or_default();
+    let mut encoded = Vec::with_capacity(3 + key.len() + 32 + preimage.len());
+    encoded.push(LEAF);
+    encoded.extend_from_slice(&(key.len() as u16).to_be_bytes());
+    encoded.extend_from_slice(key);
+    encoded.extend_from_slice(value.as_slice());
+    encoded.extend_from_slice(preimage);
+    encoded
+}
+
+fn encode_branch(prefix: &[bool], left: B256, right: B256) -> Vec<u8> {
+    let packed_len = prefix.len().div_ceil(8);
+    let mut encoded = Vec::with_capacity(3 + packed_len + 64);
+    encoded.push(BRANCH);
+    encoded.extend_from_slice(&(prefix.len() as u16).to_be_bytes());
+    encoded.resize(3 + packed_len, 0);
+    for (index, bit) in prefix.iter().enumerate() {
+        encoded[3 + index / 8] |= u8::from(*bit) << (7 - index % 8);
+    }
+    encoded.extend_from_slice(left.as_slice());
+    encoded.extend_from_slice(right.as_slice());
+    encoded
+}
 
 fn database_key(prefix: u8, hash: B256) -> [u8; 33] {
     let mut key = [prefix; 33];

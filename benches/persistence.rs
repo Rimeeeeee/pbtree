@@ -3,10 +3,12 @@
 
 #![allow(missing_docs)] // CodSpeed's macros generate undocumented public functions.
 
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use pbt::{
-    AccountData, Blake3Hasher, StateTree, migration::DecodeLimits, persistence::NodeDatabase,
+    AccountData, Blake3Hasher, StateTree, StateUpdate,
+    migration::DecodeLimits,
+    persistence::{AccountUpdate, CodeUpdate, NodeDatabase, SubtreeCache},
 };
 use std::{hint::black_box, sync::Arc};
 
@@ -159,5 +161,100 @@ fn proofs(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, saves, loads, proofs);
+fn execution(c: &mut Criterion) {
+    let limits = DecodeLimits::native();
+    let mut group = c.benchmark_group("persistence/execution");
+    group.throughput(Throughput::Elements(64));
+    for size in [4_096, 16_384] {
+        let state = populated_state(size);
+        let root = state.root();
+        let leaves = state.tree().len();
+        let fixture = Fixture::new(&state);
+        let db = &fixture.database;
+
+        let targets: Vec<_> = (0..64).map(|index| address(index * size / 64)).collect();
+        let slot = U256::from(64);
+        let value = B256::repeat_byte(2);
+        let code_hash = keccak256([0x60; 64]);
+        let apply_eager = |state: &mut State| {
+            state
+                .apply_batch(targets.iter().flat_map(|&address| {
+                    [
+                        StateUpdate::Account {
+                            address,
+                            account: Some(AccountData {
+                                nonce: 2,
+                                balance: U256::from(100),
+                                code: Bytes::from_static(&[0x60; 64]),
+                            }),
+                        },
+                        StateUpdate::Storage { address, slot, value },
+                    ]
+                }))
+                .unwrap();
+        };
+        let apply_disk = |cache: &Arc<SubtreeCache<Blake3Hasher>>| {
+            let checkpoint = {
+                let _mutation = db.mutation.lock().unwrap();
+                cache.checkpoint(root).unwrap()
+            };
+            let mut state = checkpoint.overlay();
+            for &address in &targets {
+                state
+                    .update_account(
+                        address,
+                        Some(AccountUpdate {
+                            nonce: 2,
+                            balance: U256::from(100),
+                            code: CodeUpdate::Retain(code_hash),
+                        }),
+                        false,
+                        [(slot, value)],
+                    )
+                    .unwrap();
+            }
+            state
+        };
+        let cache = Arc::new(SubtreeCache::new(db.clone(), 16_384));
+        let mut expected = state.clone();
+        apply_eager(&mut expected);
+        assert_eq!(apply_disk(&cache).root(), expected.root());
+        drop(expected);
+
+        group.bench_function(BenchmarkId::new("cold_parent_eager", size), |b| {
+            b.iter_batched(
+                || (),
+                |()| {
+                    let mut restored = db.load::<Blake3Hasher>(root, leaves, limits).unwrap();
+                    apply_eager(&mut restored);
+                    black_box(restored)
+                },
+                BatchSize::PerIteration,
+            );
+        });
+        group.bench_function(BenchmarkId::new("cold_parent_overlay", size), |b| {
+            b.iter_batched(
+                || Arc::new(SubtreeCache::new(db.clone(), 16_384)),
+                |cache| black_box(apply_disk(&cache)),
+                BatchSize::PerIteration,
+            );
+        });
+        group.bench_function(BenchmarkId::new("warm_parent_overlay", size), |b| {
+            b.iter_batched(|| (), |()| black_box(apply_disk(&cache)), BatchSize::PerIteration);
+        });
+        group.bench_function(BenchmarkId::new("warm_parent_eager", size), |b| {
+            b.iter_batched(
+                || state.clone(),
+                |mut state| {
+                    apply_eager(&mut state);
+                    black_box(state)
+                },
+                BatchSize::PerIteration,
+            );
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, saves, loads, proofs, execution);
 criterion_main!(benches);

@@ -60,7 +60,11 @@ publishing a root. Interrupted sweeps recover before the next ordinary save.
 `NodeDatabase::proof` reads and authenticates a single native search path while a
 mutation guard or root lease protects it. It avoids full-state reconstruction.
 Native persistence benchmarks include these path reads. `load` still reconstructs
-the complete in-memory state.
+the complete in-memory state. For commitment execution, a shared `SubtreeCache`
+can pin a registered parent and create a private `StateOverlay`. Reads authenticate
+only visited paths and a synced save writes changed nodes before registering the
+child root. The node cache has a fixed entry count. Work that requires global
+code ownership or full snapshot authentication can still restore the full state.
 
 Keep `DecodeLimits::default()` for untrusted migration artifacts. Locally executed
 native state can use `DecodeLimits::native()` independently, allowing valid chain
