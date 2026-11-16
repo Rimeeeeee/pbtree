@@ -60,7 +60,11 @@ publishing a root. Interrupted sweeps recover before the next ordinary save.
 `NodeDatabase::proof` reads and authenticates a single native search path while a
 mutation guard or root lease protects it. It avoids full-state reconstruction.
 Native persistence benchmarks include these path reads. `load` still reconstructs
-the complete in-memory state.
+the complete in-memory state. For commitment execution, a shared `SubtreeCache`
+can pin a registered parent and create a private `StateOverlay`. Reads authenticate
+only visited paths and a synced save writes changed nodes before registering the
+child root. The node cache has a fixed entry count. Work that requires global
+code ownership or full snapshot authentication can still restore the full state.
 
 Keep `DecodeLimits::default()` for untrusted migration artifacts. Locally executed
 native state can use `DecodeLimits::native()` independently, allowing valid chain
@@ -132,17 +136,10 @@ comparisons once the repository is connected and `main` has a baseline run.
 CI fixes Rayon at four workers so baseline and pull request runs use the same
 task partitioning. CodSpeed estimates CPU work in simulation mode. Serial and
 parallel builds can do similar CPU work even when the parallel build finishes
-sooner. Run the benchmarks locally to measure elapsed time for parallel builds
-or RocksDB I/O. Set `RAYON_NUM_THREADS=4` in your shell to match CI's pool size.
+sooner. Set `RAYON_NUM_THREADS=4` in your shell to match CI's pool size.
 
-```sh
-cargo bench --locked --benches                                     # tree and state
-cargo bench --locked --benches --all-features                      # all six suites
-cargo bench --locked --features parallel --bench backends          # serial vs. Rayon
-```
 
-The full suite adds migration, BAL replay, RocksDB persistence, and parallel
-construction. The persistence suite requires a C++ compiler and libclang.
+The persistence suite requires a C++ compiler and libclang.
 For a local check of the CodSpeed harness on Linux:
 
 ```sh
