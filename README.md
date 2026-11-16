@@ -56,6 +56,10 @@ when references or roots are removed.
 `collect_cooperatively` marks without blocking checkpoint writers and yields between
 bounded sweep batches. Saves during a sweep repair and mark reused subtrees before
 publishing a root. Interrupted sweeps recover before the next ordinary save.
+`collect_cooperatively_if_needed` amortizes full collection over a caller-selected
+number of removed roots. Its counter survives reopen; interrupted sweeps bypass
+the threshold. Root removal is immediate, while unreachable nodes stay on disk
+until collection. Explicit collection APIs still force a pass.
 
 `NodeDatabase::proof` reads and authenticates a single native search path while a
 mutation guard or root lease protects it. It avoids full-state reconstruction.

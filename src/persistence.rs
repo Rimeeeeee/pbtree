@@ -360,7 +360,12 @@ impl NodeDatabase {
             return Err(ArtifactError::Invalid("PBT root is pinned").into());
         }
         let mut batch = WriteBatch::default();
-        batch.delete(database_key(ROOT, root));
+        if self.leaf_count(root)?.is_some() {
+            let removed =
+                self.collection_removals()?.checked_add(1).ok_or(ArtifactError::ResourceLimit)?;
+            batch.put(GC_REMOVED_ROOTS, removed.to_be_bytes());
+            batch.delete(database_key(ROOT, root));
+        }
         let result = write(&self.db, batch);
         after_write();
         // Readers can inspect registered roots without taking mutation. Publish the
@@ -389,18 +394,40 @@ impl NodeDatabase {
     /// if another collection is active. Unreferenced nodes allocated during a sweep
     /// may survive until the next pass. Failed sweeps remain recoverable on reopen.
     pub fn collect_cooperatively<H: TreeHasher>(&self) -> Result<bool, NodeError> {
-        self.collect_cooperatively_with::<H>(GC_SWEEP_NODES, |_| Ok(()))
+        self.collect_cooperatively_with::<H>(GC_SWEEP_NODES, 0, |_| Ok(()))
+    }
+
+    /// Collects only after at least `minimum_removed_roots` registered roots have been removed.
+    ///
+    /// Do not hold `mutation`. The counter is durable and shared across handles. A skipped,
+    /// busy, or failed collection retains its debt; removals during a successful collection
+    /// count towards the next pass. Interrupted sweeps recover regardless of the threshold.
+    /// Zero forces collection, like [`Self::collect_cooperatively`]. Returns false when the
+    /// threshold is not reached or another collection is active. Unreachable nodes remain
+    /// on disk until collection, while removed roots immediately become unavailable.
+    pub fn collect_cooperatively_if_needed<H: TreeHasher>(
+        &self,
+        minimum_removed_roots: u64,
+    ) -> Result<bool, NodeError> {
+        self.collect_cooperatively_with::<H>(GC_SWEEP_NODES, minimum_removed_roots, |_| Ok(()))
     }
 
     fn collect_cooperatively_with<H: TreeHasher>(
         &self,
         sweep_nodes: usize,
+        minimum_removed_roots: u64,
         mut checkpoint: impl FnMut(CollectionPhase) -> Result<(), NodeError>,
     ) -> Result<bool, NodeError> {
         let writer = self.mutation.lock().map_err(|_| NodeError::Poisoned)?;
+        let removed = self.collection_removals()?;
+        let pending = self.db.get(GC_PENDING)?.is_some();
+        if !pending && removed < minimum_removed_roots {
+            return Ok(false);
+        }
         let Some(_collection) = self.begin_collection() else { return Ok(false) };
-        if self.db.get(GC_PENDING)?.is_some() {
+        if pending {
             self.collect_with::<H>(WRITE_BATCH_BYTES, || Ok(()))?;
+            return Ok(true);
         }
         drop(writer);
         // No sweeper is active yet and saves do not add marks before GC_PENDING.
@@ -445,6 +472,15 @@ impl NodeDatabase {
             // marks, so concurrent saves cannot mistake cleared marks for holes.
             let mut batch = WriteBatch::default();
             batch.delete(GC_PENDING);
+            let remaining = self
+                .collection_removals()?
+                .checked_sub(removed)
+                .ok_or(ArtifactError::Invalid("invalid PBT collection counter"))?;
+            if remaining == 0 {
+                batch.delete(GC_REMOVED_ROOTS);
+            } else {
+                batch.put(GC_REMOVED_ROOTS, remaining.to_be_bytes());
+            }
             write(&self.db, batch)?;
         }
         self.delete_prefix(MARK)?;
@@ -504,7 +540,17 @@ impl NodeDatabase {
         self.delete_prefix(MARK)?;
         let mut batch = WriteBatch::default();
         batch.delete(GC_PENDING);
+        batch.delete(GC_REMOVED_ROOTS);
         write(&self.db, batch)
+    }
+
+    fn collection_removals(&self) -> Result<u64, NodeError> {
+        let Some(bytes) = self.db.get(GC_REMOVED_ROOTS)? else { return Ok(0) };
+        let encoded = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| ArtifactError::Invalid("invalid PBT collection counter"))?;
+        Ok(u64::from_be_bytes(encoded))
     }
 
     fn mark_tree<H: TreeHasher>(&self, root: B256, batch_bytes: usize) -> Result<(), NodeError> {
@@ -742,6 +788,8 @@ const ROOT: u8 = b'r';
 const MARK: u8 = b'g';
 // This metadata key deliberately does not share the node/root/mark hash prefixes.
 const GC_PENDING: &[u8] = b"pending_gc";
+// Optional scheduling metadata; existing node, root and marker encodings are unchanged.
+const GC_REMOVED_ROOTS: &[u8] = b"collection_removed_roots";
 const LEAF: u8 = 0;
 const BRANCH: u8 = 1;
 const WRITE_BATCH_BYTES: usize = 8 * 1024 * 1024;
@@ -1139,7 +1187,7 @@ mod tests {
                 )
                 .unwrap();
             let mut repaired = false;
-            let result = database.collect_cooperatively_with::<Blake3Hasher>(1, |phase| {
+            let result = database.collect_cooperatively_with::<Blake3Hasher>(1, 0, |phase| {
                 assert!(!database.collect_cooperatively::<Blake3Hasher>()?);
                 match phase {
                     CollectionPhase::Marked => {
@@ -1201,6 +1249,158 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn deferred_collection_survives_reopen_and_counts_only_removed_roots() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = NodeDatabase::open(directory.path()).unwrap();
+        let limits = DecodeLimits::native();
+        let states = (1..=3)
+            .map(|nonce| {
+                let mut state = StateTree::<Blake3Hasher>::new();
+                state
+                    .set_account(Address::ZERO, AccountData { nonce, ..Default::default() })
+                    .unwrap();
+                state
+            })
+            .collect::<Vec<_>>();
+        {
+            let _guard = database.mutation.lock().unwrap();
+            for state in &states {
+                database.save(state, limits).unwrap();
+            }
+            database.remove_root(states[0].root()).unwrap();
+            database.remove_root(states[0].root()).unwrap();
+            let lease = database.pin_roots(&[states[1].root()]).unwrap();
+            assert!(matches!(
+                database.remove_root(states[1].root()),
+                Err(NodeError::Artifact(ArtifactError::Invalid("PBT root is pinned")))
+            ));
+            drop(lease);
+        }
+        let before = node_count(&database);
+        assert!(!database.collect_cooperatively_if_needed::<Blake3Hasher>(2).unwrap());
+        assert_eq!(node_count(&database), before);
+        assert_eq!(database.collection_removals().unwrap(), 1);
+        drop(database);
+        let database = NodeDatabase::open(directory.path()).unwrap();
+        assert!(!database.collect_cooperatively_if_needed::<Blake3Hasher>(2).unwrap());
+        {
+            let _guard = database.mutation.lock().unwrap();
+            database.remove_root(states[1].root()).unwrap();
+        }
+        // A busy collector cannot consume debt without performing the work.
+        let collection = database.begin_collection().unwrap();
+        assert!(!database.collect_cooperatively_if_needed::<Blake3Hasher>(2).unwrap());
+        drop(collection);
+        assert!(database.collect_cooperatively_if_needed::<Blake3Hasher>(2).unwrap());
+        assert!(node_count(&database) < before);
+        assert_eq!(database.collection_removals().unwrap(), 0);
+        assert!(!database.collect_cooperatively_if_needed::<Blake3Hasher>(1).unwrap());
+        assert_eq!(
+            database
+                .load::<Blake3Hasher>(states[2].root(), states[2].tree().len(), limits)
+                .unwrap()
+                .root(),
+            states[2].root()
+        );
+        // Explicit collection remains available below the automatic threshold.
+        assert!(database.collect_cooperatively::<Blake3Hasher>().unwrap());
+    }
+
+    #[test]
+    fn deferred_collection_preserves_concurrent_debt_and_recovers_failed_sweeps() {
+        for interrupt in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let database = NodeDatabase::open(directory.path()).unwrap();
+            let states = (1..=3)
+                .map(|nonce| {
+                    let mut state = StateTree::<Blake3Hasher>::new();
+                    state
+                        .set_account(Address::ZERO, AccountData { nonce, ..Default::default() })
+                        .unwrap();
+                    state
+                })
+                .collect::<Vec<_>>();
+            {
+                let _guard = database.mutation.lock().unwrap();
+                for state in &states {
+                    database.save(state, DecodeLimits::native()).unwrap();
+                }
+                database.remove_root(states[0].root()).unwrap();
+            }
+            let result = database.collect_cooperatively_with::<Blake3Hasher>(1, 1, |phase| {
+                match phase {
+                    CollectionPhase::Marked => {
+                        let _guard = database.mutation.lock().unwrap();
+                        database.remove_root(states[1].root())?;
+                    }
+                    CollectionPhase::Swept if interrupt => {
+                        return Err(
+                            ArtifactError::Invalid("interrupted deferred collection").into()
+                        );
+                    }
+                    _ => {}
+                }
+                Ok(())
+            });
+            if interrupt {
+                assert!(matches!(
+                    result,
+                    Err(NodeError::Artifact(ArtifactError::Invalid(
+                        "interrupted deferred collection"
+                    )))
+                ));
+                assert_eq!(database.collection_removals().unwrap(), 2);
+                // An interrupted sweep must bypass even an unreachable scheduling threshold.
+                assert!(
+                    database.collect_cooperatively_if_needed::<Blake3Hasher>(u64::MAX).unwrap()
+                );
+            } else {
+                assert!(result.unwrap());
+                assert_eq!(database.collection_removals().unwrap(), 1);
+                assert!(!database.collect_cooperatively_if_needed::<Blake3Hasher>(2).unwrap());
+                assert!(database.collect_cooperatively_if_needed::<Blake3Hasher>(1).unwrap());
+            }
+            assert_eq!(database.collection_removals().unwrap(), 0);
+            let retained = &states[2];
+            assert_eq!(
+                database
+                    .load::<Blake3Hasher>(
+                        retained.root(),
+                        retained.tree().len(),
+                        DecodeLimits::native()
+                    )
+                    .unwrap()
+                    .root(),
+                retained.root()
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_collection_counter_does_not_unregister_a_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = NodeDatabase::open(directory.path()).unwrap();
+        let mut state = StateTree::<Blake3Hasher>::new();
+        state.set_account(Address::ZERO, AccountData { nonce: 1, ..Default::default() }).unwrap();
+        let _guard = database.mutation.lock().unwrap();
+        database.save(&state, DecodeLimits::native()).unwrap();
+        database.db.put(GC_REMOVED_ROOTS, [1; 7]).unwrap();
+        assert!(matches!(
+            database.remove_root(state.root()),
+            Err(NodeError::Artifact(ArtifactError::Invalid("invalid PBT collection counter")))
+        ));
+        assert_eq!(database.leaf_count(state.root()).unwrap(), Some(state.tree().len()));
+        database.db.put(GC_REMOVED_ROOTS, u64::MAX.to_be_bytes()).unwrap();
+        assert!(matches!(
+            database.remove_root(state.root()),
+            Err(NodeError::Artifact(ArtifactError::ResourceLimit))
+        ));
+        assert_eq!(database.leaf_count(state.root()).unwrap(), Some(state.tree().len()));
+        database.collect::<Blake3Hasher>().unwrap();
+        assert_eq!(database.collection_removals().unwrap(), 0);
     }
 
     fn node_count(database: &NodeDatabase) -> usize {

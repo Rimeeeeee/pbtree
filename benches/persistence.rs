@@ -407,5 +407,33 @@ fn commits(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, saves, loads, proofs, execution, fallback, commits);
+fn deferred_collection(c: &mut Criterion) {
+    let mut group = c.benchmark_group("persistence/collection");
+    for size in SIZES {
+        let state = populated_state(size);
+        let fixture = Fixture::new(&state);
+        {
+            let mut changed = state.clone();
+            let mut account = changed.account(address(0)).unwrap().clone();
+            account.nonce += 1;
+            changed.set_account(address(0), account).unwrap();
+            let _mutation = fixture.database.mutation.lock().unwrap();
+            fixture.database.save(&changed, DecodeLimits::native()).unwrap();
+            fixture.database.remove_root(state.root()).unwrap();
+        }
+        group.bench_function(BenchmarkId::new("below_threshold", size), |b| {
+            b.iter(|| {
+                assert!(
+                    !fixture
+                        .database
+                        .collect_cooperatively_if_needed::<Blake3Hasher>(black_box(256))
+                        .unwrap()
+                );
+            });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, saves, loads, proofs, execution, fallback, commits, deferred_collection);
 criterion_main!(benches);
