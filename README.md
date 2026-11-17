@@ -58,7 +58,8 @@ bounded sweep batches. Saves during a sweep repair and mark reused subtrees befo
 publishing a root. Interrupted sweeps recover before the next ordinary save.
 `collect_cooperatively_if_needed` amortizes full collection over a caller-selected
 number of removed roots. Its counter survives reopen; interrupted sweeps bypass
-the threshold. Root removal is immediate, while unreachable nodes stay on disk
+the threshold. Forced passes and interrupted-sweep recovery can repair a malformed
+scheduling counter after a successful sweep. Root removal is immediate, while unreachable nodes stay on disk
 until collection. Explicit collection APIs still force a pass.
 
 `NodeDatabase::proof` reads and authenticates a single native search path while a

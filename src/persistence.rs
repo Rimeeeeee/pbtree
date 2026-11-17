@@ -402,6 +402,8 @@ impl NodeDatabase {
     /// Do not hold `mutation`. The counter is durable and shared across handles. A skipped,
     /// busy, or failed collection retains its debt; removals during a successful collection
     /// count towards the next pass. Interrupted sweeps recover regardless of the threshold.
+    /// Forced collection and pending-sweep recovery repair malformed scheduling metadata
+    /// after a successful locked sweep; ordinary threshold checks report malformed counters.
     /// Zero forces collection, like [`Self::collect_cooperatively`]. Returns false when the
     /// threshold is not reached or another collection is active. Unreachable nodes remain
     /// on disk until collection, while removed roots immediately become unavailable.
@@ -419,15 +421,25 @@ impl NodeDatabase {
         mut checkpoint: impl FnMut(CollectionPhase) -> Result<(), NodeError>,
     ) -> Result<bool, NodeError> {
         let writer = self.mutation.lock().map_err(|_| NodeError::Poisoned)?;
-        let removed = self.collection_removals()?;
-        let pending = self.db.get(GC_PENDING)?.is_some();
-        if !pending && removed < minimum_removed_roots {
-            return Ok(false);
-        }
         let Some(_collection) = self.begin_collection() else { return Ok(false) };
-        if pending {
+        if self.db.get(GC_PENDING)?.is_some() {
             self.collect_with::<H>(WRITE_BATCH_BYTES, || Ok(()))?;
             return Ok(true);
+        }
+        let removed = match self.collection_removals() {
+            Ok(removed) => removed,
+            Err(NodeError::Artifact(ArtifactError::Invalid("invalid PBT collection counter")))
+                if minimum_removed_roots == 0 =>
+            {
+                // Optional scheduling metadata must not block explicit recovery.
+                // Repair it only after authenticating roots and completing the sweep.
+                self.collect_with::<H>(WRITE_BATCH_BYTES, || Ok(()))?;
+                return Ok(true);
+            }
+            Err(error) => return Err(error),
+        };
+        if removed < minimum_removed_roots {
+            return Ok(false);
         }
         drop(writer);
         // No sweeper is active yet and saves do not add marks before GC_PENDING.
@@ -1401,6 +1413,89 @@ mod tests {
         assert_eq!(database.leaf_count(state.root()).unwrap(), Some(state.tree().len()));
         database.collect::<Blake3Hasher>().unwrap();
         assert_eq!(database.collection_removals().unwrap(), 0);
+    }
+
+    #[test]
+    fn forced_and_pending_cooperative_collection_repair_malformed_debt() {
+        for pending in [false, true] {
+            for threshold in [0, 1, u64::MAX] {
+                let directory = tempfile::tempdir().unwrap();
+                let database = NodeDatabase::open(directory.path()).unwrap();
+                let limits = DecodeLimits::native();
+                let mut state = StateTree::<Blake3Hasher>::new();
+                state
+                    .set_account(Address::ZERO, AccountData { nonce: 1, ..Default::default() })
+                    .unwrap();
+                let orphan = state.root();
+                {
+                    let _guard = database.mutation.lock().unwrap();
+                    database.save(&state, limits).unwrap();
+                    state
+                        .set_account(Address::ZERO, AccountData { nonce: 2, ..Default::default() })
+                        .unwrap();
+                    database.save(&state, limits).unwrap();
+                    database.remove_root(orphan).unwrap();
+                    database.db.put(GC_REMOVED_ROOTS, [1; 7]).unwrap();
+                    if pending {
+                        database.db.put(GC_PENDING, []).unwrap();
+                    }
+                }
+                let result = database.collect_cooperatively_if_needed::<Blake3Hasher>(threshold);
+                if !pending && threshold != 0 {
+                    assert!(matches!(
+                        result,
+                        Err(NodeError::Artifact(ArtifactError::Invalid(
+                            "invalid PBT collection counter"
+                        )))
+                    ));
+                    assert_eq!(database.db.get(GC_REMOVED_ROOTS).unwrap().unwrap(), [1; 7]);
+                    assert!(database.collect_cooperatively::<Blake3Hasher>().unwrap());
+                } else {
+                    assert!(result.unwrap());
+                }
+                assert!(database.db.get(GC_REMOVED_ROOTS).unwrap().is_none());
+                assert!(database.db.get(GC_PENDING).unwrap().is_none());
+                assert!(database.db.get(database_key(NODE, orphan)).unwrap().is_none());
+                assert_eq!(
+                    database
+                        .load::<Blake3Hasher>(state.root(), state.tree().len(), limits)
+                        .unwrap()
+                        .root(),
+                    state.root()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn failed_forced_recovery_retains_malformed_debt_and_pending_marker() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = NodeDatabase::open(directory.path()).unwrap();
+        let mut state = StateTree::<Blake3Hasher>::new();
+        state.set_account(Address::ZERO, AccountData { nonce: 1, ..Default::default() }).unwrap();
+        {
+            let _guard = database.mutation.lock().unwrap();
+            database.save(&state, DecodeLimits::native()).unwrap();
+        }
+        let key = database_key(NODE, state.root());
+        let node = database.db.get(key).unwrap().unwrap();
+        for pending in [false, true] {
+            database.db.put(GC_REMOVED_ROOTS, [1; 7]).unwrap();
+            database.db.put(key, []).unwrap();
+            if pending {
+                database.db.put(GC_PENDING, []).unwrap();
+            }
+            assert!(matches!(
+                database.collect_cooperatively::<Blake3Hasher>(),
+                Err(NodeError::Artifact(ArtifactError::Truncated))
+            ));
+            assert_eq!(database.db.get(GC_REMOVED_ROOTS).unwrap().unwrap(), [1; 7]);
+            assert_eq!(database.db.get(GC_PENDING).unwrap().is_some(), pending);
+            database.db.put(key, &node).unwrap();
+            assert!(database.collect_cooperatively::<Blake3Hasher>().unwrap());
+            assert!(database.db.get(GC_REMOVED_ROOTS).unwrap().is_none());
+            assert!(database.db.get(GC_PENDING).unwrap().is_none());
+        }
     }
 
     fn node_count(database: &NodeDatabase) -> usize {
