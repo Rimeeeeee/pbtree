@@ -787,7 +787,7 @@ mod tests {
         assert_eq!(db.leaf_count(root).unwrap(), None);
         assert!(db.is_pinned(base).unwrap());
         let mut published = false;
-        db.collect_cooperatively_with::<Blake3Hasher>(256, |phase| {
+        db.collect_cooperatively_with::<Blake3Hasher>(256, 0, |phase| {
             if matches!(phase, super::super::CollectionPhase::Swept) && !published {
                 let _guard = db.mutation.lock().unwrap();
                 changed.save(&db, limits).unwrap();
